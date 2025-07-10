@@ -235,7 +235,6 @@ def solve_eetrack_optimization(
     target_poses: list[jaxlie.SE3],
     weights: TrackingWeights,
 ) -> Tuple[tuple[jaxlie.SE3, ...], jnp.ndarray]:
-    """Solve the EETrack optimization problem."""
 
     timesteps = len(target_poses)
 

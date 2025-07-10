@@ -16,7 +16,6 @@ import numpy as onp
 import pyroki as pk
 import yourdfpy
 
-# --- Data Structures ---
 
 class TrackingWeights(TypedDict):
     position_tracking: float
@@ -25,19 +24,17 @@ class TrackingWeights(TypedDict):
     joint_limits: float
     rest_pose: float
 
-# --- JAX-native Core Functions ---
 
 def generate_target_poses(start_point: jnp.ndarray, end_point: jnp.ndarray, rotation_rpy: dict, num_timesteps: int) -> jaxlie.SE3:
-    """Generates a sequence of SE(3) target poses for a single welding line."""
     positions = jnp.linspace(start_point, end_point, num_timesteps)
     rotation = jaxlie.SO3.from_rpy_radians(
         rotation_rpy['roll'], rotation_rpy['pitch'], rotation_rpy['yaw']
     )
-    # Tile rotation for all timesteps
     rotations = jax.vmap(lambda _: rotation)(jnp.arange(num_timesteps))
-    return jaxlie.SE3.from_rotation_and_translation(rotations, positions)
+    poses = jaxlie.SE3.from_rotation_and_translation(rotations, positions)
+    return poses
 
-@partial(jax.jit, static_argnames=("robot", "weights", "actuated_joint_names", "movable_joint_names"))
+@partial(jax.jit, static_argnames=("actuated_joint_names", "movable_joint_names"))
 def solve_eetrack_optimization(
     robot: pk.Robot,
     target_poses: jaxlie.SE3,
@@ -45,26 +42,30 @@ def solve_eetrack_optimization(
     actuated_joint_names: tuple[str, ...],
     movable_joint_names: tuple[str, ...],
 ) -> Tuple[jnp.int32, jnp.ndarray]:
-    """Solve the EETrack optimization problem for a single trajectory."""
-    timesteps = target_poses.shape[0]
+    timesteps = target_poses.translation().shape[0]
     var_joints = robot.joint_var_cls(jnp.arange(timesteps))
 
-    # --- Cost definitions ---
     @jaxls.Cost.create_factory
-    def path_tracking_cost_t(
+    def path_tracking_cost(
         var_values: jaxls.VarValues,
-        var_robot_cfg_t: jaxls.Var[jnp.ndarray],
-        target_pose_t: jaxlie.SE3,
+        var_robot_cfg: jaxls.Var[jnp.ndarray],
+        target_poses_batch: jaxlie.SE3,
     ) -> jax.Array:
-        robot_cfg = var_values[var_robot_cfg_t]
+        robot_cfgs = var_values[var_robot_cfg]
         end_effector_link_idx = robot.links.names.index("end_effector")
-        fk_poses_arr = robot.forward_kinematics(cfg=robot_cfg)
-        ee_pose_in_root_arr = fk_poses_arr[end_effector_link_idx]
-        ee_pose = jaxlie.SE3(ee_pose_in_root_arr)
-        error = (target_pose_t.inverse() @ ee_pose).log()
+
+        all_fk_poses = robot.forward_kinematics(cfg=robot_cfgs)
+        
+        ee_poses = jaxlie.SE3(all_fk_poses)
+
+        errors = (target_poses_batch.inverse() @ ee_poses).log()
+        
+        position_errors = jnp.linalg.norm(errors[:, :3], axis=1)
+        orientation_errors = jnp.linalg.norm(errors[:, 3:], axis=1)
+
         return jnp.hstack([
-            error[:3] * weights["position_tracking"],
-            error[3:] * weights["orientation_tracking"],
+            position_errors * weights["position_tracking"],
+            orientation_errors * weights["orientation_tracking"],
         ])
 
     @jaxls.Cost.create_factory
@@ -75,29 +76,31 @@ def solve_eetrack_optimization(
     ) -> jax.Array:
         return (var_values[var_robot_cfg_curr] - var_values[var_robot_cfg_prev]) * weights["smoothness"]
 
-    # --- Build costs list ---
     costs: list[jaxls.Cost] = []
     rest_weights = jnp.full(var_joints.default_factory().shape, weights["rest_pose"])
     for i, joint_name in enumerate(actuated_joint_names):
         if joint_name not in movable_joint_names:
             rest_weights = rest_weights.at[i].set(weights["rest_pose"] * 100.0)
 
+    costs.append(path_tracking_cost(var_joints, target_poses))
+
     for t in range(timesteps):
-        costs.append(path_tracking_cost_t(var_joints[t], target_poses[t]))
         costs.append(pk.costs.limit_cost(robot, var_joints[t], weights["joint_limits"]))
         costs.append(pk.costs.rest_cost(var_joints[t], var_joints.default_factory(), rest_weights))
 
     for t in range(timesteps - 1):
         costs.append(smoothness_cost_t(var_joints[t + 1], var_joints[t]))
 
-    # --- Solve ---
-    solution = jaxls.LeastSquaresProblem(costs, [var_joints]).analyze().solve()
+    solution, summary = (
+        jaxls.LeastSquaresProblem(costs, [var_joints])
+        .analyze()
+        .solve(return_summary=True, verbose=False)
+    )
     solved_joints = jnp.stack([solution[var_joints[t]] for t in range(timesteps)])
-    return solution.status, solved_joints
+    return summary.termination_criteria, solved_joints
 
-@partial(jax.jit, static_argnames=("robot",))
+@partial(jax.jit, static_argnames=())
 def check_feasibility_jax(robot: pk.Robot, joints: jnp.ndarray, target_poses: jaxlie.SE3, tolerance_config: dict) -> Tuple[jnp.bool_, jnp.ndarray, jnp.ndarray]:
-    """JAX-native feasibility check for a single trajectory."""
     end_effector_link_idx = robot.links.names.index("end_effector")
 
     def fk_for_one_timestep(robot_cfg):
@@ -105,7 +108,11 @@ def check_feasibility_jax(robot: pk.Robot, joints: jnp.ndarray, target_poses: ja
         return jaxlie.SE3(fk_poses[end_effector_link_idx])
 
     ee_poses = jax.vmap(fk_for_one_timestep)(joints)
-    errors = (target_poses.inverse() @ ee_poses).log()
+    
+    def compute_error(ee_pose, target_pose):
+        return (target_pose.inverse() @ ee_pose).log()
+    
+    errors = jax.vmap(compute_error)(ee_poses, target_poses)
 
     position_errors = jnp.linalg.norm(errors[:, :3], axis=1)
     orientation_errors = jnp.linalg.norm(errors[:, 3:], axis=1)
@@ -120,7 +127,6 @@ def check_feasibility_jax(robot: pk.Robot, joints: jnp.ndarray, target_poses: ja
     return is_feasible, max_position_error, max_orientation_error
 
 def main():
-    # --- Configuration and Setup ---
     asset_dir = Path(__file__).parent / "retarget_helpers" / "eetrack"
     with open(asset_dir / "config.yaml", 'r') as f:
         config = yaml.safe_load(f)
@@ -133,7 +139,6 @@ def main():
             joint.set("type", "fixed")
     robot = pk.Robot.from_urdf(yourdfpy.URDF.load(StringIO(ET.tostring(xml_tree.getroot(), encoding="unicode"))))
 
-    # --- Generate Candidate Lines ---
     search_config = config['search_space']
     x_params, y_params, angle_params = search_config['x_range'], search_config['y_range'], search_config['angle_range']
     x_range = onp.arange(x_params[0], x_params[1], x_params[2])
@@ -161,7 +166,6 @@ def main():
     candidate_starts_jnp = jnp.array([line['start'] for line in candidate_lines])
     candidate_ends_jnp = jnp.array([line['end'] for line in candidate_lines])
 
-    # --- Define Batched Processing Function ---
     weights = config['weights']
     actuated_joint_names = tuple(robot.joints.actuated_names)
     movable_joint_names = tuple(config['robot']['movable_joints'])
@@ -170,7 +174,6 @@ def main():
     tolerance_config = config['tolerance']
 
     def check_one_line(start_point, end_point):
-        """Processes a single line: generates poses, solves IK, and checks feasibility."""
         target_poses = generate_target_poses(start_point, end_point, rotation_rpy, num_timesteps)
         
         status, solved_joints = solve_eetrack_optimization(
@@ -184,22 +187,20 @@ def main():
             return jnp.array(False), jnp.array(jnp.inf), jnp.array(jnp.inf)
 
         return jax.lax.cond(
-            status == jaxls.SolveStatus.SOLVED,
+            status[1] == 1,
             feasible_branch,
             non_feasible_branch,
             None
         )
 
-    # --- Compile and Run ---
     print("Compiling batch processing function with JAX... (this may take a minute)")
     jitted_batch_checker = jax.jit(jax.vmap(check_one_line))
 
     start_time = time.time()
     all_feasible, all_pos_errs, all_orient_errs = jitted_batch_checker(candidate_starts_jnp, candidate_ends_jnp)
-    all_feasible.block_until_ready() # Ensure computation is finished for accurate timing
+    all_feasible.block_until_ready()
     end_time = time.time()
     
-    # --- Report Results ---
     print("\n\n--- Batch Processing Complete ---")
     print(f"Total time: {end_time - start_time:.2f} seconds")
 

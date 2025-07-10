@@ -10,7 +10,7 @@ welding_path:
 
 # Robot configuration
 robot:
-  urdf_path: "/workspace/isaaclab/source/extensions/omni.isaac.lab_assets/data/g1_UDRF/g1_29dof_rev_1_0_ver4_camera_mount_v4.urdf"
+  urdf_path: "/workspace/isaaclab/pyroki/examples/retarget_helpers/eetrack/g1_29dof_rev_1_0_ver4_camera_mount_v4.urdf"
   movable_joints:
     - "right_shoulder_pitch_joint"
     - "right_shoulder_roll_joint"
@@ -39,8 +39,6 @@ tolerance:
   position_error: 0.005  # meters (5mm)
   # orientation_error: 0.017  # radians (~1 degrees)
   orientation_error: 0.087  # radians (~5 degrees)
-  cumulative_position_error: 0.8  # meters (cumulative over entire trajectory)
-  cumulative_orientation_error: 10.0  # radians (cumulative over entire trajectory)
 
 # Batch search space settings
 search_space:
@@ -49,4 +47,4 @@ search_space:
   z_height: 0.0
   x_range: [-0.2, 0.2, 0.1]      # [start, stop, step]
   y_range: [-0.6, -0.4, 0.1]    # [start, stop, step]
-  angle_range: [0, 6.28318, 0.785398] # [start, stop (2*pi), step (pi/4)]
+  angle_range: [0, 1.5707963268, 0.09817477] # [start, stop (2*pi), step (pi/4)]
