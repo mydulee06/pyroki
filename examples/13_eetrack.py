@@ -28,7 +28,7 @@ class TrackingWeights(TypedDict):
 
 def main():
     # Load configuration from YAML file
-    asset_dir = Path(__file__).parent / "retarget_helpers" / "eetrack"
+    asset_dir = Path(__file__).parent / "eetrack"
     config_file = asset_dir / "config.yaml"
     
     with open(config_file, 'r') as f:

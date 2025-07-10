@@ -127,7 +127,7 @@ def check_feasibility_jax(robot: pk.Robot, joints: jnp.ndarray, target_poses: ja
     return is_feasible, max_position_error, max_orientation_error
 
 def main():
-    asset_dir = Path(__file__).parent / "retarget_helpers" / "eetrack"
+    asset_dir = Path(__file__).parent / "eetrack"
     with open(asset_dir / "config.yaml", 'r') as f:
         config = yaml.safe_load(f)
 
