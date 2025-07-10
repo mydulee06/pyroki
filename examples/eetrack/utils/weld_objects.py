@@ -78,9 +78,13 @@ class WeldObject:
         normal_lerp = lerp(normal_lerp_start, normal_lerp_end, lerp_weight[:,None])
         normal_lerp_deg = jnp.arctan2(normal_lerp[:,1], normal_lerp[:,0])/jnp.pi*180
         in_segment_degs = (segment_normal_deg_range[0] < normal_lerp_deg) & (normal_lerp_deg < segment_normal_deg_range[1])
+        in_segment_degs_ids = in_segment_degs.nonzero()[0]
+        if in_segment_degs.shape[0] -1 in in_segment_degs_ids:
+            discon_idx = jnp.diff(in_segment_degs_ids).argmax() + 1
+            in_segment_degs_ids = jnp.concat([in_segment_degs_ids[discon_idx:], in_segment_degs_ids[:discon_idx]])
 
-        self.eetrack_poss_b = eetrack_poss_b[in_segment_degs]
-        self.eetrack_quats_b = eetrack_quats_b[in_segment_degs]
+        self.eetrack_poss_b = eetrack_poss_b[in_segment_degs_ids]
+        self.eetrack_quats_b = eetrack_quats_b[in_segment_degs_ids]
         self.eetrack_poses_b = jaxlie.SE3(jnp.concat([self.eetrack_quats_b, self.eetrack_poss_b], axis=1))
         self.number_of_subgoals = self.eetrack_poses_b.parameters().shape[0]
 
