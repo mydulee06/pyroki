@@ -16,6 +16,7 @@ from viser.extras import ViserUrdf
 import xml.etree.ElementTree as ET
 from io import StringIO
 import yaml
+from eetrack.utils.weld_objects import WeldObject
 
 
 class TrackingWeights(TypedDict):
@@ -50,24 +51,35 @@ def main():
     modified_urdf = yourdfpy.URDF.load(buf)
 
     robot = pk.Robot.from_urdf(modified_urdf)
-    
-    # Load or generate welding path data
-    # This should be a sequence of SE(3) poses for the end-effector
-    welding_path_file = asset_dir / "welding_path.npy"
-    
-    # if welding_path_file.exists():
-    #     # Load pre-defined welding path
-    #     welding_path = onp.load(welding_path_file)
-    # else:
-    #     # Generate a simple welding path for demonstration
-    #     # This should be replaced with actual welding path data
-    #     num_timesteps = config['welding_path']['num_timesteps']
-    #     welding_path = generate_demo_welding_path(config['welding_path'])
-    #     onp.save(welding_path_file, welding_path)
 
-    num_timesteps = config['welding_path']['num_timesteps']
-    welding_path = generate_demo_welding_path(config['welding_path'])
-    onp.save(welding_path_file, welding_path)
+    welding_path_from_object = config["welding_path_from_object"]
+    if config["welding_path_from_object"]:
+        welding_object = WeldObject(**config["welding_object"])
+        welding_object_pose = jnp.array(config["welding_object_pose"])[None] # Ensure shape is (N, 7)
+        welding_object_pose = jaxlie.SE3(welding_object_pose) # wxyz_xyz
+        welding_path_se3 = welding_object.get_welding_path(welding_object_pose)
+        # wxyz_xyz -> xyz_xyzw
+        welding_path_pos = welding_path_se3.translation()
+        welding_path_xyzw = jnp.roll(welding_path_se3.rotation().wxyz, shift=-1, axis=-1)
+        welding_path = jnp.concat([welding_path_pos, welding_path_xyzw], axis=-1)[0]
+    else:
+        # Load or generate welding path data
+        # This should be a sequence of SE(3) poses for the end-effector
+        welding_path_file = asset_dir / "welding_path.npy"
+        
+        # if welding_path_file.exists():
+        #     # Load pre-defined welding path
+        #     welding_path = onp.load(welding_path_file)
+        # else:
+        #     # Generate a simple welding path for demonstration
+        #     # This should be replaced with actual welding path data
+        #     num_timesteps = config['welding_path']['num_timesteps']
+        #     welding_path = generate_demo_welding_path(config['welding_path'])
+        #     onp.save(welding_path_file, welding_path)
+
+        num_timesteps = config['welding_path']['num_timesteps']
+        welding_path = generate_demo_welding_path(config['welding_path'])
+        onp.save(welding_path_file, welding_path)
 
     target_poses = [
         jaxlie.SE3.from_rotation_and_translation(
@@ -84,6 +96,15 @@ def main():
     urdf_vis = ViserUrdf(server, modified_urdf, root_node_name="/base")
     playing = server.gui.add_checkbox("playing", True)
     timestep_slider = server.gui.add_slider("timestep", 0, num_timesteps - 1, 1, 0)
+    if welding_path_from_object:
+        server.scene.add_mesh_trimesh("welding_object", welding_object.trimesh.apply_transform(welding_object_pose.as_matrix()[0]))
+        server.scene.add_frame(
+            "welding_object_pose",
+            axes_length=0.1,
+            axes_radius=0.002,
+            wxyz=welding_object_pose.rotation().wxyz[0],
+            position=welding_object_pose.translation()[0],
+        )
     
     # Add error display
     current_error_text = server.gui.add_text("Current Error: ", "Position: 0.0000 m, Orientation: 0.0000 rad")
@@ -198,11 +219,12 @@ def main():
             base_frame.position = onp.array(Ts_world_root[tstep].wxyz_xyz[4:])
             urdf_vis.update_cfg(onp.array(joints[tstep]))
             
-            server.scene.add_point_cloud(
-                "/target_path",
-                onp.array(target_poses[tstep].translation()).reshape(1, 3),
-                onp.array(config['visualization']['target_color'])[None],  # Color from config
-                point_size=config['visualization']['point_size'],
+            server.scene.add_frame(
+                "/target_pose",
+                axes_length=0.1,
+                axes_radius=0.002,
+                wxyz=target_poses[tstep].rotation().wxyz,
+                position=target_poses[tstep].translation(),
             )
 
         time.sleep(config['visualization']['sleep_time'])

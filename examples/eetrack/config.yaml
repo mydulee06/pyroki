@@ -8,6 +8,18 @@ welding_path:
     pitch: 0.785398  # pi/4 in radians
     yaw: -1.570796    # pi/2 in radians
 
+welding_path_from_object: True
+welding_object_pose: [0.7071, 0.0, 0.0, 0.7071, 0.4, -0.2, 0.0] # wxyz_xyz
+welding_object:
+  object_dir: "eetrack/weld_objects"
+  object_name: "Circular_Body_Plate_110_80"
+  segment_normal_deg_range: [89.0, 91.0]
+  # object_name: "Circular_Plate_50"
+  # segment_normal_deg_range: [60.0, 120.0]
+  segment_length_per_timestep: 0.0002  # 0.1 m/s * 0.02 s (vel * dt)
+  offset_length: 0.02
+  approach_deg: 45.0
+
 # Robot configuration
 robot:
   urdf_path: "eetrack/robots/g1_29dof_rev_1_0_ver4_camera_mount_v4.urdf"
