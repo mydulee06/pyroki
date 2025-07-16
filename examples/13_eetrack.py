@@ -1,3 +1,4 @@
+import os
 import time
 from pathlib import Path
 from typing import Tuple, TypedDict
@@ -26,6 +27,17 @@ class TrackingWeights(TypedDict):
     joint_limits: float
     rest_pose: float
 
+def get_mid_sole_link_pose(left_sole_link_pose, right_sole_link_pose):
+    return jaxlie.SE3.from_rotation_and_translation(
+        rotation=jaxlie.SO3.exp(
+            (left_sole_link_pose.rotation().log() + 
+             right_sole_link_pose.rotation().log())/2
+        ),
+        translation=(
+            left_sole_link_pose.translation() +
+            right_sole_link_pose.translation()
+        )/2,
+    )
 
 def main():
     # Load configuration from YAML file
@@ -38,25 +50,38 @@ def main():
     urdf_path = config['robot']['urdf_path']
     urdf_obj = yourdfpy.URDF.load(urdf_path)
 
-    movable_joints = set(config['robot']['movable_joints'])
-
-    xml_tree = urdf_obj.write_xml()
-    for joint in xml_tree.findall('.//joint[@type="revolute"]'):
-        joint_name = joint.get("name")
-        if joint_name not in movable_joints:
-            joint.set("type", "fixed")
-    
-    modified_xml_str = ET.tostring(xml_tree.getroot(), encoding="unicode")
-    buf = StringIO(modified_xml_str)
-    modified_urdf = yourdfpy.URDF.load(buf)
+    # Set joint position from the terminal state of sitting policy and the target height
+    sit_terminal_states = onp.load(config['robot']['sit_terminal_states_path'])
+    idx = onp.abs(sit_terminal_states["target_height"] - config['robot']['sit_target_height']).argmin()
+    root_pose = sit_terminal_states["root_state"][idx, :7]
+    root_vel = sit_terminal_states["root_state"][idx, 7:]
+    joint_pos = sit_terminal_states["joint_state"][idx, 0]
+    joint_vel = sit_terminal_states["joint_state"][idx, 1]
+    lab2yourdf = [onp.where(sit_terminal_states["lab_joint"] == jn)[0].item() for jn in urdf_obj.actuated_joint_names]
+    urdf_obj.update_cfg(joint_pos[lab2yourdf])
+    for joint in urdf_obj.robot.joints:
+        if joint.name in urdf_obj.actuated_joint_names and joint.name not in config['robot']['movable_joints']:
+            joint.type = "fixed"
+            joint.origin = urdf_obj.get_transform(joint.child, joint.parent)
+    modified_urdf = yourdfpy.URDF(urdf_obj.robot, mesh_dir=os.path.dirname(urdf_path))
 
     robot = pk.Robot.from_urdf(modified_urdf)
 
     welding_path_from_object = config["welding_path_from_object"]
     if config["welding_path_from_object"]:
+        welding_object_config = config["welding_object"]
+        welding_object_pose = jaxlie.SE3(
+            jnp.array(welding_object_config.pop("pose"))[None] # Ensure shape is (N, 7)
+        )
+        welding_object_parent = welding_object_config.pop("parent", None)
+        if welding_object_parent == "mid_sole_link":
+            left_sole_link_pose = jaxlie.SE3.from_matrix(modified_urdf.get_transform("left_sole_link")[None])
+            right_sole_link_pose = jaxlie.SE3.from_matrix(modified_urdf.get_transform("right_sole_link")[None])
+            parent_pose = get_mid_sole_link_pose(left_sole_link_pose, right_sole_link_pose)
+        else:
+            parent_pose = jaxlie.SE3.identity((1,))
+        welding_object_pose = parent_pose @ welding_object_pose
         welding_object = WeldObject(**config["welding_object"])
-        welding_object_pose = jnp.array(config["welding_object_pose"])[None] # Ensure shape is (N, 7)
-        welding_object_pose = jaxlie.SE3(welding_object_pose) # wxyz_xyz
         welding_path_se3 = welding_object.get_welding_path(welding_object_pose)
         # wxyz_xyz -> xyz_xyzw
         welding_path_pos = welding_path_se3.translation()
@@ -104,6 +129,13 @@ def main():
             axes_radius=0.002,
             wxyz=welding_object_pose.rotation().wxyz[0],
             position=welding_object_pose.translation()[0],
+        )
+        server.scene.add_frame(
+            "/object_parent",
+            axes_length=0.1,
+            axes_radius=0.002,
+            wxyz=parent_pose.rotation().wxyz[0],
+            position=parent_pose.translation()[0],
         )
     
     # Add error display
