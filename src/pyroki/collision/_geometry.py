@@ -239,19 +239,24 @@ class Capsule(CollGeom):
     def from_trimesh(mesh: trimesh.Trimesh) -> Capsule:
         """
         Create Capsule geometry from minimum bounding cylinder of the mesh.
+        Capsule height is reduced to 80% of the original height to avoid overly conservative collision detection.
         """
         if mesh.is_empty:
             return Capsule(pose=jaxlie.SE3.identity(), size=jnp.zeros((2,)))
         results = trimesh.bounds.minimum_cylinder(mesh)
         radius = results["radius"]
         height = results["height"]
+        
+        # Reduce capsule height to 80% to avoid overly conservative collision detection
+        height_reduced = height * 0.8
+        
         tf_mat = results["transform"]
         tf = jaxlie.SE3.from_matrix(tf_mat)
         capsule = Capsule.from_radius_height(
             position=jnp.zeros((3,)),
             wxyz=jnp.array([1.0, 0.0, 0.0, 0.0]),
             radius=radius,
-            height=height,
+            height=height_reduced,
         )
         capsule = capsule.transform(tf)
         return capsule

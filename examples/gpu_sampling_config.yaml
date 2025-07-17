@@ -1,0 +1,84 @@
+# GPU Welding Path Sampling Configuration
+
+# Sampling parameters
+sampling:
+  num_paths: 1
+  batch_size: 1
+  num_runs: 1
+  
+# Search space configuration
+search_space:
+  x_range: [0.15, 0.15]   # X-axis search range [min, max]
+  y_range: [-0.65, 0.65]   # Y-axis search range [min, max]
+  z_height: 0           # Fixed Z height
+  line_length: 0.15         # Welding line length
+  angle_range: [3.141592653589793, 3.141592653589793]  # Angle range [min, max] (π radians, negative X direction)
+
+# Welding orientation
+welding_orientation:
+  roll: 0.0                 # Roll angle (radians)
+  pitch: 0.785398           # Pitch angle (radians) - pi/4
+  yaw: -1.570796             # Yaw angle (radians) - -pi/2
+
+# Optimization parameters
+optimization:
+  num_timesteps: 50  # Set same as 13_eetrack
+  max_iterations: 100
+
+# Tolerance settings
+tolerance:
+  position_error: 0.05  # Position error tolerance (meters)
+  orientation_error: 0.087  # Orientation error tolerance (radians) - ~5 degrees
+
+# Cost weights
+weights:
+  position_tracking: 200.0
+  orientation_tracking: 1000.0
+  smoothness: 50.0
+  joint_limits: 1500.0  # Set same as 13_eetrack
+  collision: 0.5
+
+# Collision settings
+collision:
+  safety_margin: 0.05  # Collision safety margin (meters) - same as 13_eetrack
+  ignore_adjacent_links: true
+  only_movable_links: true
+  exclude_links: [
+    "head_link", "camera_color_optical_frame", "camera_link", 
+    "d435_link", "d435_mount_1_link", "d435_mount_2_link", 
+    "mid360_link", "mid360_link_IMU", "mid360_link_frame",
+    "left_shoulder_pitch_link", "left_shoulder_roll_link", "left_shoulder_yaw_link", 
+    "left_elbow_link", "left_wrist_pitch_link", "left_wrist_roll_link", 
+    "left_wrist_yaw_link", "left_rubber_hand", "left_hip_pitch_link", "left_hip_roll_link", "left_hip_yaw_link", "left_knee_link", 
+    "left_ankle_pitch_link", "left_ankle_roll_link", "left_sole_link"
+  ]
+  ignore_pairs: [
+    ["right_wrist_yaw_link", "right_wrist_roll_link"],
+    ["right_wrist_pitch_link", "right_elbow_link"]
+  ]
+
+# Output settings
+output:
+  save_format: ["json", "pickle"]  # Save formats
+  output_dir: "./successful_welding_paths"
+  save_metadata: true
+  save_statistics: true
+  
+# Performance settings
+performance:
+  use_gpu: true             # Use GPU
+  compile_mode: "jit"     # JIT compile mode
+  memory_fraction: 0.8      # GPU memory usage fraction
+  enable_xla_optimizations: true
+
+# Robot configuration
+robot:
+  urdf_path: "eetrack/robots/g1_29dof_rev_1_0_ver4_camera_mount_v4.urdf"
+  movable_joints:
+    - "right_shoulder_pitch_joint"
+    - "right_shoulder_roll_joint"
+    - "right_shoulder_yaw_joint"
+    - "right_elbow_joint"
+    - "right_wrist_pitch_joint"
+    - "right_wrist_roll_joint"
+    - "right_wrist_yaw_joint" 

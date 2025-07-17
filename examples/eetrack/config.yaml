@@ -38,11 +38,30 @@ robot:
 
 # Optimization weights
 weights:
-  position_tracking: 100.0
-  orientation_tracking: 50.0
-  smoothness: 100.0
+  position_tracking: 200.0
+  orientation_tracking: 100.0
+  smoothness: 50.0
   joint_limits: 100.0
-  rest_pose: 0.1
+  collision: 0.5
+
+# Collision settings
+collision:
+  safety_margin: 0.05  # Collision safety margin (meters)
+  ignore_adjacent_links: true
+  only_movable_links: true
+  exclude_links: [
+    "head_link", "camera_color_optical_frame", "camera_link", 
+    "d435_link", "d435_mount_1_link", "d435_mount_2_link", 
+    "mid360_link", "mid360_link_IMU", "mid360_link_frame",
+    "left_shoulder_pitch_link", "left_shoulder_roll_link", "left_shoulder_yaw_link", 
+    "left_elbow_link", "left_wrist_pitch_link", "left_wrist_roll_link", 
+    "left_wrist_yaw_link", "left_rubber_hand", "left_hip_pitch_link", "left_hip_roll_link", "left_hip_yaw_link", "left_knee_link", 
+    "left_ankle_pitch_link", "left_ankle_roll_link", "left_sole_link"
+  ]
+  ignore_pairs: [
+    ["right_wrist_yaw_link", "right_wrist_roll_link"],
+    ["right_wrist_pitch_link", "right_elbow_link"]
+  ]
 
 # Visualization settings
 visualization:
@@ -52,9 +71,8 @@ visualization:
 
 # Error tolerance settings
 tolerance:
-  position_error: 0.005  # meters (5mm)
-  # orientation_error: 0.017  # radians (~1 degrees)
-  orientation_error: 0.087  # radians (~5 degrees)
+  position_error: 0.05  # Position error tolerance (meters)
+  orientation_error: 0.087  # Orientation error tolerance (radians) - ~5 degrees
 
 # Batch search space settings
 search_space:
