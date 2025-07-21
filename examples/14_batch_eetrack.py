@@ -8,8 +8,6 @@ import jax_dataclasses as jdc
 import jaxlie
 import jaxls
 import pyroki as pk
-import viser
-from viser.extras import ViserUrdf
 import yaml
 import yourdfpy
 from eetrack.utils.weld_objects import WeldObject
@@ -65,14 +63,6 @@ def sample_welding_object_pose(config):
     return x, y, yaw, z_height
 
 def sample_welding_object_pose_batch(config, batch_size):
-    """
-    Batch로 welding object pose를 샘플링한다.
-    Args:
-        config: config.yaml dict
-        batch_size: 샘플 개수
-    Returns:
-        (batch_size, 4) ndarray: [x, y, yaw, z]
-    """
     search_space = config.get('search_space', {})
     x_min, x_max = search_space.get('x_range', [-0.3, 0.3])
     y_min, y_max = search_space.get('y_range', [-0.5, -0.1])
@@ -161,183 +151,9 @@ def se3_from_pose(pose):
 se3_from_pose_vmap = jax.vmap(se3_from_pose, in_axes=0)
 
 def analyze_trajectory(robot, joints, target_poses, config):
-    # joints: (T, D), target_poses: (T, 7)
-    T = joints.shape[0]
-    # Vectorized forward kinematics
-    def get_ee_pose(cfg):
-        fk_poses_arr = robot.forward_kinematics(cfg=cfg)
-        ee_pose_in_root_arr = fk_poses_arr[robot.links.names.index("end_effector")]
-        return ee_pose_in_root_arr
-    get_ee_pose_vmap = jax.vmap(get_ee_pose, in_axes=0)
-    ee_poses = get_ee_pose_vmap(joints)  # (T, 7)
-    # Convert to SE3 objects
-    ee_se3s = se3_from_pose_vmap(ee_poses)
-    target_se3s = se3_from_pose_vmap(target_poses)
-    # Compute error
-    def calc_error(target_se3, ee_se3):
-        return (target_se3.inverse() @ ee_se3).log()
-    calc_error_vmap = jax.vmap(calc_error)
-    errors = calc_error_vmap(target_se3s, ee_se3s)  # (T, 6)
-    position_errors = jnp.linalg.norm(errors[:, :3], axis=1)
-    orientation_errors = jnp.linalg.norm(errors[:, 3:], axis=1)
-    max_position_error = float(jnp.max(position_errors))
-    max_orientation_error = float(jnp.max(orientation_errors))
-    # Smoothness cost
-    smoothness_costs = jnp.linalg.norm(joints[1:] - joints[:-1], axis=1) * config['weights']['smoothness']
-    max_smoothness_cost = float(jnp.max(smoothness_costs))
-    # Timesteps exceeding tolerance
-    error_timesteps = jnp.where((position_errors > config['tolerance']['position_error']) |
-                                (orientation_errors > config['tolerance']['orientation_error']))[0].tolist()
-    return max_position_error, max_orientation_error, max_smoothness_cost, error_timesteps
-
-def visualize_trajectory(server, urdf_vis, base_frame, Ts_world_root, joints, target_poses_se3, config, robot, position_failed, orientation_failed):
-    num_timesteps = len(target_poses_se3)
-    playing = server.gui.add_checkbox("playing", True)
-    timestep_slider = server.gui.add_slider("timestep", 0, num_timesteps - 1, 1, 0)
-    current_error_text = server.gui.add_text("Current Error: ", "Position: 0.0000 m, Orientation: 0.0000 rad")
-    status_text = server.gui.add_text("Status: ", "")
-    # 최초 상태 동기화
-    if position_failed or orientation_failed:
-        status_text.value = "❌ FAILED: " + ("Position" if position_failed else "") + (" and " if position_failed and orientation_failed else "") + ("Orientation" if orientation_failed else "") + " max error exceeded tolerance"
-    else:
-        status_text.value = "✅ PASSED: All errors within tolerance"
-    while True:
-        with server.atomic():
-            if playing.value:
-                timestep_slider.value = (timestep_slider.value + 1) % num_timesteps
-            tstep = timestep_slider.value
-            robot_cfg = joints[tstep]
-            end_effector_link_idx = robot.links.names.index("end_effector")
-            fk_poses_arr = robot.forward_kinematics(cfg=robot_cfg)
-            ee_pose_in_root_arr = fk_poses_arr[end_effector_link_idx]
-            ee_se3 = jaxlie.SE3(ee_pose_in_root_arr)
-            target_se3 = target_poses_se3[tstep]
-            error = (target_se3.inverse() @ ee_se3).log()
-            current_position_error = np.linalg.norm(np.array(error[:3]))
-            current_orientation_error = np.linalg.norm(np.array(error[3:]))
-            current_error_text.value = f"Position: {current_position_error:.4f} m, Orientation: {current_orientation_error:.4f} rad"
-            base_frame.wxyz = np.array(Ts_world_root[tstep].wxyz_xyz[:4])
-            base_frame.position = np.array(Ts_world_root[tstep].wxyz_xyz[4:])
-            urdf_vis.update_cfg(np.array(joints[tstep]))
-            server.scene.add_frame(
-                "/target_pose",
-                axes_length=0.1,
-                axes_radius=0.002,
-                wxyz=target_se3.rotation().wxyz,
-                position=target_se3.translation(),
-            )
-        time.sleep(config['visualization']['sleep_time'])
-
-def solve_eetrack_optimization(
-    robot: pk.Robot,
-    target_poses: jnp.ndarray,  # (T, 7)
-    weights: TrackingWeights,
-    max_iterations = 100,
-) -> Tuple[tuple[jaxlie.SE3, ...], jnp.ndarray]:
-    timesteps = target_poses.shape[0]
-    var_joints = robot.joint_var_cls(jnp.arange(timesteps))
-
-    @jaxls.Cost.create_factory
-    def path_tracking_cost_t(
-        var_values: jaxls.VarValues,
-        var_robot_cfg_t: jaxls.Var[jnp.ndarray],
-        target_pose_t: jnp.ndarray,
-    ) -> jax.Array:
-        robot_cfg = var_values[var_robot_cfg_t]
-        T_world_root = jaxlie.SE3.identity()
-        end_effector_link_idx = robot.links.names.index("end_effector")
-        fk_poses_arr = robot.forward_kinematics(cfg=robot_cfg)
-        ee_pose_in_root_arr = fk_poses_arr[end_effector_link_idx]
-        T_root_ee = jaxlie.SE3(ee_pose_in_root_arr)
-        ee_pose = T_world_root @ T_root_ee
-        target_se3 = se3_from_pose(target_pose_t)
-        error = (target_se3.inverse() @ ee_pose).log()
-        position_error = error[:3]
-        orientation_error = error[3:]
-        weighted_error = jnp.hstack([
-            position_error * weights["position_tracking"],
-            orientation_error * weights["orientation_tracking"],
-        ])
-        return weighted_error
-
-    @jaxls.Cost.create_factory
-    def smoothness_cost_t(
-        var_values: jaxls.VarValues,
-        var_robot_cfg_curr: jaxls.Var[jnp.ndarray],
-        var_robot_cfg_prev: jaxls.Var[jnp.ndarray],
-    ) -> jax.Array:
-        curr_cfg = var_values[var_robot_cfg_curr]
-        prev_cfg = var_values[var_robot_cfg_prev]
-        return (curr_cfg - prev_cfg) * weights["smoothness"]
-
-    # Safely generate costs using for loop
-    costs = []
-    for t in range(timesteps):
-        costs.append(path_tracking_cost_t(var_joints[t], target_poses[t]))
-        costs.append(pk.costs.limit_cost(robot, var_joints[t], weights["joint_limits"]))
-    for t in range(timesteps - 1):
-        costs.append(smoothness_cost_t(var_joints[t+1], var_joints[t]))
-    termination_config = TerminationConfig(
-        max_iterations=max_iterations,
-    )
-    solution = (
-        jaxls.LeastSquaresProblem(costs, [var_joints])
-        .analyze()
-        .solve(
-            termination = termination_config,
-        )
-    )
-    solved_Ts_world_root = tuple([jaxlie.SE3.identity() for _ in range(timesteps)])
-    solved_joints = jnp.stack([solution[var_joints[t]] for t in range(timesteps)])
-    return solved_Ts_world_root, solved_joints
-solve_eetrack_optimization = jax.jit(solve_eetrack_optimization, static_argnames=["max_iterations"])
-
-def main():
-    config, asset_dir = load_config()
-    sampled_x, sampled_y, sampled_yaw, sampled_z = sample_welding_object_pose(config)
-    robot, modified_urdf = load_robot(config)
-    
-    # Get welding object, pose, and parent pose (single source of truth)
-    welding_object, welding_object_pose, parent_pose = (None, None, None)
-    if config["welding_path_from_object"]:
-        welding_object, welding_object_pose, parent_pose = get_welding_object_and_pose(
-            config, modified_urdf, sampled_x, sampled_y, sampled_yaw, sampled_z)
-    welding_path = get_welding_path(config, asset_dir, modified_urdf, sampled_x, sampled_y, sampled_yaw, sampled_z)
-    target_poses = make_target_poses(welding_path)  # (T, 7) jnp.ndarray
-    target_poses_se3 = make_target_poses_se3(welding_path)  # SE3 object list (for visualization/analysis)
-    num_timesteps = target_poses.shape[0]
-    server = viser.ViserServer()
-    base_frame = server.scene.add_frame("/base", show_axes=False)
-    urdf_vis = ViserUrdf(server, modified_urdf, root_node_name="/base")
-    weights = TrackingWeights(
-        position_tracking=config['weights']['position_tracking'],
-        orientation_tracking=config['weights']['orientation_tracking'],
-        smoothness=config['weights']['smoothness'],
-        joint_limits=config['weights']['joint_limits'],
-    )
-    max_iterations = config.get('optimization', {}).get('max_iterations', 30)
-    # Add welding_object, welding_object_pose, object_parent to viser.scene (as in old version)
-    if welding_object is not None and welding_object_pose is not None:
-        server.scene.add_mesh_trimesh("welding_object", welding_object.trimesh.apply_transform(welding_object_pose.as_matrix()[0]))
-        server.scene.add_frame(
-            "welding_object_pose",
-            axes_length=0.1,
-            axes_radius=0.002,
-            wxyz=welding_object_pose.rotation().wxyz[0],
-            position=welding_object_pose.translation()[0],
-        )
-        server.scene.add_frame(
-            "/object_parent",
-            axes_length=0.1,
-            axes_radius=0.002,
-            wxyz=parent_pose.rotation().wxyz[0],
-            position=parent_pose.translation()[0],
-        )
-    Ts_world_root, joints = solve_eetrack_optimization(robot, target_poses, weights, max_iterations)
-    # Error analysis based on SE3 object list (as in old version)
+    num_timesteps = joints.shape[0]
     max_position_error = 0.0
     max_orientation_error = 0.0
-    error_timesteps = []
     for t in range(num_timesteps):
         robot_cfg = joints[t]
         end_effector_link_idx = robot.links.names.index("end_effector")
@@ -346,26 +162,184 @@ def main():
         T_root_ee = jaxlie.SE3(ee_pose_in_root_arr)
         T_world_root = jaxlie.SE3.identity()
         ee_pose = T_world_root @ T_root_ee
-        error = (target_poses_se3[t].inverse() @ ee_pose).log()
-        position_error = np.linalg.norm(error[:3])
-        orientation_error = np.linalg.norm(error[3:])
-        max_position_error = max(max_position_error, position_error)
-        max_orientation_error = max(max_orientation_error, orientation_error)
-        if (position_error > config['tolerance']['position_error'] or 
-            orientation_error > config['tolerance']['orientation_error']):
-            error_timesteps.append(t)
-    position_failed = max_position_error > config['tolerance']['position_error']
-    orientation_failed = max_orientation_error > config['tolerance']['orientation_error']
-    print(f"=== Error Analysis ===")
-    print(f"Max Position Error: {max_position_error:.4f} m (tolerance: {config['tolerance']['position_error']:.4f} m)")
-    print(f"Max Orientation Error: {max_orientation_error:.4f} rad (tolerance: {config['tolerance']['orientation_error']:.4f} rad)")
-    print(f"Timesteps with errors: {len(error_timesteps)}/{num_timesteps}")
-    if position_failed or orientation_failed:
-        print(f"❌ FAILED: {'Position' if position_failed else ''}{' and ' if position_failed and orientation_failed else ''}{'Orientation' if orientation_failed else ''} max error exceeded tolerance")
-    else:
-        print(f"✅ PASSED: All errors within tolerance")
-    # Use target_poses_se3 in visualization loop
-    visualize_trajectory(server, urdf_vis, base_frame, Ts_world_root, joints, target_poses_se3, config, robot, position_failed, orientation_failed)
+        target_se3 = jaxlie.SE3.from_rotation_and_translation(
+            jaxlie.SO3.from_quaternion_xyzw(target_poses[t, 3:]),
+            target_poses[t, :3]
+        )
+        error = (target_se3.inverse() @ ee_pose).log()
+        position_error = jnp.linalg.norm(error[:3])
+        orientation_error = jnp.linalg.norm(error[3:])
+        max_position_error = jnp.maximum(max_position_error, position_error)
+        max_orientation_error = jnp.maximum(max_orientation_error, orientation_error)
+    return max_position_error, max_orientation_error
+
+def make_solve_eetrack_optimization_jitted(robot, weights, max_iterations):
+    @jax.jit
+    def solve(target_poses):
+        timesteps = target_poses.shape[0]
+        var_joints = robot.joint_var_cls(jnp.arange(timesteps))
+
+        @jaxls.Cost.create_factory
+        def path_tracking_cost_t(
+            var_values: jaxls.VarValues,
+            var_robot_cfg_t: jaxls.Var[jnp.ndarray],
+            target_pose_t: jnp.ndarray,
+        ) -> jax.Array:
+            robot_cfg = var_values[var_robot_cfg_t]
+            T_world_root = jaxlie.SE3.identity()
+            end_effector_link_idx = robot.links.names.index("end_effector")
+            fk_poses_arr = robot.forward_kinematics(cfg=robot_cfg)
+            ee_pose_in_root_arr = fk_poses_arr[end_effector_link_idx]
+            T_root_ee = jaxlie.SE3(ee_pose_in_root_arr)
+            ee_pose = T_world_root @ T_root_ee
+            target_se3 = se3_from_pose(target_pose_t)
+            error = (target_se3.inverse() @ ee_pose).log()
+            position_error = error[:3]
+            orientation_error = error[3:]
+            weighted_error = jnp.hstack([
+                position_error * weights["position_tracking"],
+                orientation_error * weights["orientation_tracking"],
+            ])
+            return weighted_error
+
+        @jaxls.Cost.create_factory
+        def smoothness_cost_t(
+            var_values: jaxls.VarValues,
+            var_robot_cfg_curr: jaxls.Var[jnp.ndarray],
+            var_robot_cfg_prev: jaxls.Var[jnp.ndarray],
+        ) -> jax.Array:
+            curr_cfg = var_values[var_robot_cfg_curr]
+            prev_cfg = var_values[var_robot_cfg_prev]
+            return (curr_cfg - prev_cfg) * weights["smoothness"]
+
+        costs = []
+        for t in range(timesteps):
+            costs.append(path_tracking_cost_t(var_joints[t], target_poses[t]))
+            costs.append(pk.costs.limit_cost(robot, var_joints[t], weights["joint_limits"]))
+        for t in range(timesteps - 1):
+            costs.append(smoothness_cost_t(var_joints[t+1], var_joints[t]))
+        termination_config = TerminationConfig(
+            max_iterations=max_iterations,
+            early_termination=True,
+        )
+        solution = (
+            jaxls.LeastSquaresProblem(costs, [var_joints])
+            .analyze()
+            .solve(
+                termination = termination_config,
+            )
+        )
+        solved_Ts_world_root = tuple([jaxlie.SE3.identity() for _ in range(timesteps)])
+        solved_joints = jnp.stack([solution[var_joints[t]] for t in range(timesteps)])
+        return solved_Ts_world_root, solved_joints
+    return solve
+
+
+def get_welding_path_batch(config, asset_dir, modified_urdf, sampled_x, sampled_y, sampled_yaw, sampled_z):
+    # sampled_x, ...: (B,) ndarray
+    B = sampled_x.shape[0]
+    welding_paths = []
+    for i in range(B):
+        welding_path = get_welding_path(
+            config, asset_dir, modified_urdf,
+            sampled_x[i], sampled_y[i], sampled_yaw[i], sampled_z[i]
+        )
+        welding_paths.append(welding_path)
+    return np.stack(welding_paths, axis=0)  # (B, T, 7)
+
+
+def process_batch_parallel(config, asset_dir, robot, modified_urdf, weights, max_iterations, samples, solve_fn):
+    # samples: (B, 4)
+    B = samples.shape[0]
+    sampled_x, sampled_y, sampled_yaw, sampled_z = samples[:,0], samples[:,1], samples[:,2], samples[:,3]
+    welding_paths = get_welding_path_batch(config, asset_dir, modified_urdf, sampled_x, sampled_y, sampled_yaw, sampled_z)  # (B, T, 7)
+    # batch TrajOpt (vmap)
+    start_time = time.time()
+    Ts_world_root_batch, joints_batch = jax.vmap(solve_fn, in_axes=0)(welding_paths)
+    end_time = time.time()
+    print(f"Batch TrajOpt completed in {end_time - start_time:.2f} seconds")
+
+    # batch error analysis (vmap)
+    start_time = time.time()
+    def analyze_fn(joints, target_poses):
+        return analyze_trajectory(robot, joints, target_poses, config)
+    analyze_fn_vmap = jax.vmap(analyze_fn, in_axes=(0, 0))
+    max_position_errors, max_orientation_errors = analyze_fn_vmap(joints_batch, welding_paths)
+    end_time = time.time()
+    print(f"Batch Error Analysis completed in {end_time - start_time:.2f} seconds")
+
+    results = []
+    for i in range(B):
+        pos_err = float(max_position_errors[i])
+        ori_err = float(max_orientation_errors[i])
+        pos_tol = float(config['tolerance']['position_error'])
+        ori_tol = float(config['tolerance']['orientation_error'])
+        position_failed = pos_err > pos_tol
+        orientation_failed = ori_err > ori_tol
+        success = (not position_failed and not orientation_failed)
+        results.append({
+            'max_position_error': pos_err,
+            'max_orientation_error': ori_err,
+            'position_failed': bool(position_failed),
+            'orientation_failed': bool(orientation_failed),
+            'sampled_x': float(sampled_x[i]),
+            'sampled_y': float(sampled_y[i]),
+            'sampled_yaw': float(sampled_yaw[i]),
+            'sampled_z': float(sampled_z[i]),
+            'success': success
+        })
+    return results
+
+
+def pad_samples(samples, batch_size):
+    n = samples.shape[0]
+    if n == batch_size:
+        return samples, n
+    pad = np.zeros((batch_size - n, samples.shape[1]), dtype=samples.dtype)
+    padded = np.concatenate([samples, pad], axis=0)
+    return padded, n
+
+def save_results(results, filename="batch_eetrack_results.json"):
+    import json
+    with open(filename, "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"Saved Optimization Results for total {len(results)} samples: {filename}")
+
+
+def main():
+    config, asset_dir = load_config()
+    n_samples = config['search_space'].get('n_samples', 1000)
+    batch_size = config['search_space'].get('batch_size', 100)
+    robot, modified_urdf = load_robot(config)
+    weights = TrackingWeights(
+        position_tracking=config['weights']['position_tracking'],
+        orientation_tracking=config['weights']['orientation_tracking'],
+        smoothness=config['weights']['smoothness'],
+        joint_limits=config['weights']['joint_limits'],
+    )
+    max_iterations = config.get('optimization', {}).get('max_iterations', 30)
+    
+    # SOLVE function definition
+    solve_fn = make_solve_eetrack_optimization_jitted(robot, weights, max_iterations)
+
+    num_batches = int(np.ceil(n_samples / batch_size))
+    all_results = []
+    for batch_idx in range(num_batches):
+        current_batch_size = batch_size if (batch_idx < num_batches - 1) else (n_samples - batch_idx * batch_size)
+
+        # FUNCTION CALL! (sample_welding_object_pose_batch: (B, 4))
+        samples = sample_welding_object_pose_batch(config, current_batch_size)
+        samples, valid_n = pad_samples(samples, batch_size)
+
+        start_time = time.time()
+        # FUNCTION CALL! (process_batch_parallel: (B, 4)) :: Most Time-Consuming Function
+        batch_results = process_batch_parallel(
+            config, asset_dir, robot, modified_urdf, weights, max_iterations, samples, solve_fn
+        )
+        
+        all_results.extend(batch_results[:valid_n])
+
+    save_results(all_results)
 
 if __name__ == "__main__":
     main()
