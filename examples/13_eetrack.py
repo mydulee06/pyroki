@@ -52,19 +52,43 @@ def load_robot(config):
     modified_urdf = yourdfpy.URDF(urdf_obj.robot, mesh_dir=Path(urdf_path).parent)
     return pk.Robot.from_urdf(modified_urdf), modified_urdf
 
-def get_welding_path(config, asset_dir, modified_urdf):
+def sample_welding_object_pose(config):
+    search_space = config.get('search_space', {})
+    x_min, x_max = search_space.get('x_range', [-0.3, 0.3])
+    y_min, y_max = search_space.get('y_range', [-0.5, -0.1])
+    yaw_min, yaw_max = search_space.get('angle_range', [-np.pi/2, np.pi/2])
+    z_height = search_space.get('z_height', 0.0)
+    x = np.random.uniform(x_min, x_max)
+    y = np.random.uniform(y_min, y_max)
+    yaw = np.random.uniform(yaw_min, yaw_max)
+    print(f"Sampled welding object: x={x:.3f}, y={y:.3f}, z={z_height:.3f}, yaw={yaw:.3f} rad ({np.degrees(yaw):.1f} deg)")
+    return x, y, yaw, z_height
+
+def get_welding_object_and_pose(config, modified_urdf, sampled_x=None, sampled_y=None, sampled_yaw=None, sampled_z=None):
+    welding_object_config = config["welding_object"].copy()
+    welding_object_config.pop('pose', None)
+    welding_object_config.pop('yaw', None)
+    px = sampled_x or 0.0
+    py = sampled_y or 0.0
+    pz = sampled_z or 0.0
+    yaw = sampled_yaw or 0.0
+    so3 = jaxlie.SO3.from_rpy_radians(0.0, 0.0, yaw)
+    welding_object_pose = jaxlie.SE3.from_rotation_and_translation(so3, jnp.array([px, py, pz]))
+    parent = welding_object_config.pop("parent", None)
+    if parent == "mid_sole_link":
+        left_sole = jaxlie.SE3.from_matrix(modified_urdf.get_transform("left_sole_link")[None])
+        right_sole = jaxlie.SE3.from_matrix(modified_urdf.get_transform("right_sole_link")[None])
+        parent_pose = get_mid_sole_link_pose(left_sole, right_sole)
+    else:
+        parent_pose = jaxlie.SE3.identity((1,))
+    welding_object_pose = parent_pose @ welding_object_pose
+    welding_object = WeldObject(**welding_object_config)
+    return welding_object, welding_object_pose, parent_pose
+
+def get_welding_path(config, asset_dir, modified_urdf, sampled_x=None, sampled_y=None, sampled_yaw=None, sampled_z=None):
     if config["welding_path_from_object"]:
-        welding_object_config = config["welding_object"].copy()
-        welding_object_pose = jaxlie.SE3(jnp.array(welding_object_config.pop("pose"))[None])
-        welding_object_parent = welding_object_config.pop("parent", None)
-        if welding_object_parent == "mid_sole_link":
-            left_sole_link_pose = jaxlie.SE3.from_matrix(modified_urdf.get_transform("left_sole_link")[None])
-            right_sole_link_pose = jaxlie.SE3.from_matrix(modified_urdf.get_transform("right_sole_link")[None])
-            parent_pose = get_mid_sole_link_pose(left_sole_link_pose, right_sole_link_pose)
-        else:
-            parent_pose = jaxlie.SE3.identity((1,))
-        welding_object_pose = parent_pose @ welding_object_pose
-        welding_object = WeldObject(**welding_object_config)
+        welding_object, welding_object_pose, parent_pose = get_welding_object_and_pose(
+            config, modified_urdf, sampled_x, sampled_y, sampled_yaw, sampled_z)
         welding_path_se3 = welding_object.get_welding_path(welding_object_pose)
         welding_path_pos = welding_path_se3.translation()
         welding_path_xyzw = jnp.roll(welding_path_se3.rotation().wxyz, shift=-1, axis=-1)
@@ -145,12 +169,17 @@ def analyze_trajectory(robot, joints, target_poses, config):
                                 (orientation_errors > config['tolerance']['orientation_error']))[0].tolist()
     return max_position_error, max_orientation_error, max_smoothness_cost, error_timesteps
 
-def visualize_trajectory(server, urdf_vis, base_frame, Ts_world_root, joints, target_poses_se3, config, robot):
+def visualize_trajectory(server, urdf_vis, base_frame, Ts_world_root, joints, target_poses_se3, config, robot, position_failed, orientation_failed):
     num_timesteps = len(target_poses_se3)
     playing = server.gui.add_checkbox("playing", True)
     timestep_slider = server.gui.add_slider("timestep", 0, num_timesteps - 1, 1, 0)
     current_error_text = server.gui.add_text("Current Error: ", "Position: 0.0000 m, Orientation: 0.0000 rad")
-    status_text = server.gui.add_text("Status: ", "✅ PASSED")
+    status_text = server.gui.add_text("Status: ", "")
+    # 최초 상태 동기화
+    if position_failed or orientation_failed:
+        status_text.value = "❌ FAILED: " + ("Position" if position_failed else "") + (" and " if position_failed and orientation_failed else "") + ("Orientation" if orientation_failed else "") + " max error exceeded tolerance"
+    else:
+        status_text.value = "✅ PASSED: All errors within tolerance"
     while True:
         with server.atomic():
             if playing.value:
@@ -244,8 +273,15 @@ solve_eetrack_optimization = jax.jit(solve_eetrack_optimization, static_argnames
 
 def main():
     config, asset_dir = load_config()
+    sampled_x, sampled_y, sampled_yaw, sampled_z = sample_welding_object_pose(config)
     robot, modified_urdf = load_robot(config)
-    welding_path = get_welding_path(config, asset_dir, modified_urdf)
+    
+    # Get welding object, pose, and parent pose (single source of truth)
+    welding_object, welding_object_pose, parent_pose = (None, None, None)
+    if config["welding_path_from_object"]:
+        welding_object, welding_object_pose, parent_pose = get_welding_object_and_pose(
+            config, modified_urdf, sampled_x, sampled_y, sampled_yaw, sampled_z)
+    welding_path = get_welding_path(config, asset_dir, modified_urdf, sampled_x, sampled_y, sampled_yaw, sampled_z)
     target_poses = make_target_poses(welding_path)  # (T, 7) jnp.ndarray
     target_poses_se3 = make_target_poses_se3(welding_path)  # SE3 object list (for visualization/analysis)
     num_timesteps = target_poses.shape[0]
@@ -259,19 +295,6 @@ def main():
         joint_limits=config['weights']['joint_limits'],
     )
     max_iterations = config.get('optimization', {}).get('max_iterations', 30)
-    welding_object, welding_object_pose, parent_pose = None, None, None
-    if config["welding_path_from_object"]:
-        welding_object_config = config["welding_object"].copy()
-        welding_object_pose = jaxlie.SE3(jnp.array(welding_object_config.pop("pose"))[None])
-        welding_object_parent = welding_object_config.pop("parent", None)
-        if welding_object_parent == "mid_sole_link":
-            left_sole_link_pose = jaxlie.SE3.from_matrix(modified_urdf.get_transform("left_sole_link")[None])
-            right_sole_link_pose = jaxlie.SE3.from_matrix(modified_urdf.get_transform("right_sole_link")[None])
-            parent_pose = get_mid_sole_link_pose(left_sole_link_pose, right_sole_link_pose)
-        else:
-            parent_pose = jaxlie.SE3.identity((1,))
-        welding_object_pose = parent_pose @ welding_object_pose
-        welding_object = WeldObject(**welding_object_config)
     # Add welding_object, welding_object_pose, object_parent to viser.scene (as in old version)
     if welding_object is not None and welding_object_pose is not None:
         server.scene.add_mesh_trimesh("welding_object", welding_object.trimesh.apply_transform(welding_object_pose.as_matrix()[0]))
@@ -321,7 +344,7 @@ def main():
     else:
         print(f"✅ PASSED: All errors within tolerance")
     # Use target_poses_se3 in visualization loop
-    visualize_trajectory(server, urdf_vis, base_frame, Ts_world_root, joints, target_poses_se3, config, robot)
+    visualize_trajectory(server, urdf_vis, base_frame, Ts_world_root, joints, target_poses_se3, config, robot, position_failed, orientation_failed)
 
 if __name__ == "__main__":
     main()

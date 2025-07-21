@@ -12,7 +12,8 @@ welding_path_from_object: True
 welding_object:
   parent: mid_sole_link
   object_dir: "eetrack/weld_objects"
-  pose: [1.0, 0.0, 0.0, 0.0, 0.35, -0.25, 0.3] # wxyz_xyz
+  # yaw: 1.5707963268 # pi/2
+  # pose: [1.0, 0.0, 0.0, 0.0, 0.35, -0.25, 0.3] # wxyz_xyz
   object_name: "Circular_Body_Plate_110_80"
   segment_normal_deg_range: [179.0, 181.0]
   # pose: [0.0, 0.0, 0.0, 1.0, 0.35, -0.25, 0.3] # wxyz_xyz
@@ -21,6 +22,13 @@ welding_object:
   segment_length_per_timestep: 0.0002  # 0.1 m/s * 0.02 s (vel * dt)
   offset_length: 0.02
   approach_deg: 45.0
+
+# Batch search space settings
+search_space:
+  z_height: 0.3
+  x_range: [-0.3, 0.3]      # [min, max]
+  y_range: [-0.5, -0.1]    # [min, max]
+  angle_range: [-1.570796, 1.570796] # [min, max] (rad)
 
 # Robot configuration
 robot:
@@ -73,15 +81,6 @@ visualization:
 tolerance:
   position_error: 0.05  # Position error tolerance (meters)
   orientation_error: 0.087  # Orientation error tolerance (radians) - ~5 degrees
-
-# Batch search space settings
-search_space:
-  line_length: 0.15
-  num_timesteps: 750
-  z_height: 0.0
-  x_range: [-0.2, 0.2, 0.1]      # [start, stop, step]
-  y_range: [-0.6, -0.4, 0.1]    # [start, stop, step]
-  angle_range: [0, 1.5707963268, 0.09817477] # [start, stop (2*pi), step (pi/4)]
 
 optimization:
   max_iterations: 30
