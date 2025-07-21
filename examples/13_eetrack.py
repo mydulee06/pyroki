@@ -13,6 +13,7 @@ from viser.extras import ViserUrdf
 import yaml
 import yourdfpy
 from eetrack.utils.weld_objects import WeldObject
+from jaxls import TerminationConfig, TrustRegionConfig
 
 
 class TrackingWeights(TypedDict):
@@ -177,11 +178,11 @@ def visualize_trajectory(server, urdf_vis, base_frame, Ts_world_root, joints, ta
             )
         time.sleep(config['visualization']['sleep_time'])
 
-@jax.jit
 def solve_eetrack_optimization(
     robot: pk.Robot,
     target_poses: jnp.ndarray,  # (T, 7)
     weights: TrackingWeights,
+    max_iterations = 100,
 ) -> Tuple[tuple[jaxlie.SE3, ...], jnp.ndarray]:
     timesteps = target_poses.shape[0]
     var_joints = robot.joint_var_cls(jnp.arange(timesteps))
@@ -226,14 +227,20 @@ def solve_eetrack_optimization(
         costs.append(pk.costs.limit_cost(robot, var_joints[t], weights["joint_limits"]))
     for t in range(timesteps - 1):
         costs.append(smoothness_cost_t(var_joints[t+1], var_joints[t]))
+    termination_config = TerminationConfig(
+        max_iterations=max_iterations,
+    )
     solution = (
         jaxls.LeastSquaresProblem(costs, [var_joints])
         .analyze()
-        .solve()
+        .solve(
+            termination = termination_config,
+        )
     )
     solved_Ts_world_root = tuple([jaxlie.SE3.identity() for _ in range(timesteps)])
     solved_joints = jnp.stack([solution[var_joints[t]] for t in range(timesteps)])
     return solved_Ts_world_root, solved_joints
+solve_eetrack_optimization = jax.jit(solve_eetrack_optimization, static_argnames=["max_iterations"])
 
 def main():
     config, asset_dir = load_config()
@@ -251,7 +258,7 @@ def main():
         smoothness=config['weights']['smoothness'],
         joint_limits=config['weights']['joint_limits'],
     )
-    # Compute welding_object, parent_pose, welding_object_pose (restored as in old version)
+    max_iterations = config.get('optimization', {}).get('max_iterations', 30)
     welding_object, welding_object_pose, parent_pose = None, None, None
     if config["welding_path_from_object"]:
         welding_object_config = config["welding_object"].copy()
@@ -282,7 +289,7 @@ def main():
             wxyz=parent_pose.rotation().wxyz[0],
             position=parent_pose.translation()[0],
         )
-    Ts_world_root, joints = solve_eetrack_optimization(robot, target_poses, weights)
+    Ts_world_root, joints = solve_eetrack_optimization(robot, target_poses, weights, max_iterations)
     # Error analysis based on SE3 object list (as in old version)
     max_position_error = 0.0
     max_orientation_error = 0.0

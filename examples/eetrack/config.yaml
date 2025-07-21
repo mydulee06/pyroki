@@ -82,3 +82,6 @@ search_space:
   x_range: [-0.2, 0.2, 0.1]      # [start, stop, step]
   y_range: [-0.6, -0.4, 0.1]    # [start, stop, step]
   angle_range: [0, 1.5707963268, 0.09817477] # [start, stop (2*pi), step (pi/4)]
+
+optimization:
+  max_iterations: 30
