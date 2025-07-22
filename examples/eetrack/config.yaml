@@ -26,10 +26,13 @@ welding_object:
 # Batch search space settings
 search_space:
   z_height: 0.3
-  x_range: [-0.5, 0.5]      # [min, max]
-  y_range: [-0.6, -0.2]    # [min, max]
-  angle_range: [-1.7, 1.7] # [min, max] (rad)
-  n_samples: 1000
+  x_range: [-0.6, 0.6]      # [min, max]
+  y_range: [-0.8, 0.0]    # [min, max]
+  angle_range: [-1.5707963268, 1.5707963268] # [min, max] (rad)
+  # x_range: [0.35, 0.35]      # [min, max]
+  # y_range: [-0.25, -0.25]    # [min, max]
+  # angle_range: [0.0, 0.0] # [min, max] (rad)
+  n_samples: 300
   batch_size: 100
 
 # Robot configuration
@@ -52,11 +55,11 @@ weights:
   orientation_tracking: 100.0
   smoothness: 50.0
   joint_limits: 100.0
-  collision: 0.5
+  collision: 1.0
 
 # Collision settings
 collision:
-  safety_margin: 0.05  # Collision safety margin (meters)
+  safety_margin: -0.02  # Collision safety margin (meters)
   ignore_adjacent_links: true
   only_movable_links: true
   exclude_links: [
@@ -66,17 +69,22 @@ collision:
     "left_shoulder_pitch_link", "left_shoulder_roll_link", "left_shoulder_yaw_link", 
     "left_elbow_link", "left_wrist_pitch_link", "left_wrist_roll_link", 
     "left_wrist_yaw_link", "left_rubber_hand", "left_hip_pitch_link", "left_hip_roll_link", "left_hip_yaw_link", "left_knee_link", 
-    "left_ankle_pitch_link", "left_ankle_roll_link", "left_sole_link"
+    "left_ankle_pitch_link", "left_ankle_roll_link", "left_sole_link", "right_ankle_pitch_link", "right_ankle_roll_link", "right_sole_link"
   ]
   ignore_pairs: [
     ["right_wrist_yaw_link", "right_wrist_roll_link"],
     ["right_wrist_pitch_link", "right_elbow_link"]
   ]
+  required_collision_links: [
+    "right_shoulder_pitch_link", "right_shoulder_roll_link", "right_shoulder_yaw_link",
+    "right_elbow_link", "right_wrist_pitch_link", "right_wrist_roll_link",
+    "right_wrist_yaw_link", "welder", "welder2", "end_effector"
+  ]
 
 # Visualization settings
 visualization:
   target_color: [255, 0, 0]  # Red
-  point_size: 0.02
+  point_size: 0.01
   sleep_time: 0.05
 
 # Error tolerance settings
@@ -86,3 +94,156 @@ tolerance:
 
 optimization:
   max_iterations: 50
+collision_pairs:
+  - [right_shoulder_pitch_link, pelvis]
+  - [right_shoulder_pitch_link, pelvis_contour_link]
+  - [right_shoulder_pitch_link, right_hip_pitch_link]
+  - [right_shoulder_pitch_link, right_hip_roll_link]
+  - [right_shoulder_pitch_link, right_hip_yaw_link]
+  - [right_shoulder_pitch_link, right_knee_link]
+  - [right_shoulder_pitch_link, waist_yaw_link]
+  - [right_shoulder_pitch_link, waist_roll_link]
+  - [right_shoulder_pitch_link, logo_link]
+  - [right_shoulder_pitch_link, imu_in_torso]
+  - [right_shoulder_pitch_link, imu_in_pelvis]
+  - [right_shoulder_roll_link, pelvis]
+  - [right_shoulder_roll_link, pelvis_contour_link]
+  - [right_shoulder_roll_link, right_hip_pitch_link]
+  - [right_shoulder_roll_link, right_hip_roll_link]
+  - [right_shoulder_roll_link, right_hip_yaw_link]
+  - [right_shoulder_roll_link, right_knee_link]
+  - [right_shoulder_roll_link, waist_yaw_link]
+  - [right_shoulder_roll_link, waist_roll_link]
+  - [right_shoulder_roll_link, torso_link]
+  - [right_shoulder_roll_link, logo_link]
+  - [right_shoulder_roll_link, imu_in_torso]
+  - [right_shoulder_roll_link, imu_in_pelvis]
+  - [right_shoulder_yaw_link, pelvis]
+  - [right_shoulder_yaw_link, pelvis_contour_link]
+  - [right_shoulder_yaw_link, right_hip_pitch_link]
+  - [right_shoulder_yaw_link, right_hip_roll_link]
+  - [right_shoulder_yaw_link, right_hip_yaw_link]
+  - [right_shoulder_yaw_link, right_knee_link]
+  - [right_shoulder_yaw_link, waist_yaw_link]
+  - [right_shoulder_yaw_link, waist_roll_link]
+  - [right_shoulder_yaw_link, torso_link]
+  - [right_shoulder_yaw_link, logo_link]
+  - [right_shoulder_yaw_link, imu_in_torso]
+  - [right_shoulder_yaw_link, imu_in_pelvis]
+  - [right_shoulder_yaw_link, right_shoulder_pitch_link]
+  - [right_elbow_link, pelvis]
+  - [right_elbow_link, pelvis_contour_link]
+  - [right_elbow_link, right_hip_pitch_link]
+  - [right_elbow_link, right_hip_roll_link]
+  - [right_elbow_link, right_hip_yaw_link]
+  - [right_elbow_link, right_knee_link]
+  - [right_elbow_link, waist_yaw_link]
+  - [right_elbow_link, waist_roll_link]
+  - [right_elbow_link, torso_link]
+  - [right_elbow_link, logo_link]
+  - [right_elbow_link, imu_in_torso]
+  - [right_elbow_link, imu_in_pelvis]
+  - [right_elbow_link, right_shoulder_pitch_link]
+  - [right_elbow_link, right_shoulder_roll_link]
+  - [right_wrist_roll_link, pelvis]
+  - [right_wrist_roll_link, pelvis_contour_link]
+  - [right_wrist_roll_link, right_hip_pitch_link]
+  - [right_wrist_roll_link, right_hip_roll_link]
+  - [right_wrist_roll_link, right_hip_yaw_link]
+  - [right_wrist_roll_link, right_knee_link]
+  - [right_wrist_roll_link, waist_yaw_link]
+  - [right_wrist_roll_link, waist_roll_link]
+  - [right_wrist_roll_link, torso_link]
+  - [right_wrist_roll_link, logo_link]
+  - [right_wrist_roll_link, imu_in_torso]
+  - [right_wrist_roll_link, imu_in_pelvis]
+  - [right_wrist_roll_link, right_shoulder_pitch_link]
+  - [right_wrist_roll_link, right_shoulder_roll_link]
+  - [right_wrist_roll_link, right_shoulder_yaw_link]
+  - [right_wrist_pitch_link, pelvis]
+  - [right_wrist_pitch_link, pelvis_contour_link]
+  - [right_wrist_pitch_link, right_hip_pitch_link]
+  - [right_wrist_pitch_link, right_hip_roll_link]
+  - [right_wrist_pitch_link, right_hip_yaw_link]
+  - [right_wrist_pitch_link, right_knee_link]
+  - [right_wrist_pitch_link, waist_yaw_link]
+  - [right_wrist_pitch_link, waist_roll_link]
+  - [right_wrist_pitch_link, torso_link]
+  - [right_wrist_pitch_link, logo_link]
+  - [right_wrist_pitch_link, imu_in_torso]
+  - [right_wrist_pitch_link, imu_in_pelvis]
+  - [right_wrist_pitch_link, right_shoulder_pitch_link]
+  - [right_wrist_pitch_link, right_shoulder_roll_link]
+  - [right_wrist_pitch_link, right_shoulder_yaw_link]
+  - [right_wrist_yaw_link, pelvis]
+  - [right_wrist_yaw_link, pelvis_contour_link]
+  - [right_wrist_yaw_link, right_hip_pitch_link]
+  - [right_wrist_yaw_link, right_hip_roll_link]
+  - [right_wrist_yaw_link, right_hip_yaw_link]
+  - [right_wrist_yaw_link, right_knee_link]
+  - [right_wrist_yaw_link, waist_yaw_link]
+  - [right_wrist_yaw_link, waist_roll_link]
+  - [right_wrist_yaw_link, torso_link]
+  - [right_wrist_yaw_link, logo_link]
+  - [right_wrist_yaw_link, imu_in_torso]
+  - [right_wrist_yaw_link, imu_in_pelvis]
+  - [right_wrist_yaw_link, right_shoulder_pitch_link]
+  - [right_wrist_yaw_link, right_shoulder_roll_link]
+  - [right_wrist_yaw_link, right_shoulder_yaw_link]
+  - [right_wrist_yaw_link, right_elbow_link]
+  - [welder, pelvis]
+  - [welder, pelvis_contour_link]
+  - [welder, right_hip_pitch_link]
+  - [welder, right_hip_roll_link]
+  - [welder, right_hip_yaw_link]
+  - [welder, right_knee_link]
+  - [welder, waist_yaw_link]
+  - [welder, waist_roll_link]
+  - [welder, torso_link]
+  - [welder, logo_link]
+  - [welder, imu_in_torso]
+  - [welder, imu_in_pelvis]
+  - [welder, right_shoulder_pitch_link]
+  - [welder, right_shoulder_roll_link]
+  - [welder, right_shoulder_yaw_link]
+  - [welder, right_elbow_link]
+  - [welder, right_wrist_roll_link]
+  # - [welder, right_wrist_pitch_link]
+  - [welder2, pelvis]
+  - [welder2, pelvis_contour_link]
+  - [welder2, right_hip_pitch_link]
+  - [welder2, right_hip_roll_link]
+  - [welder2, right_hip_yaw_link]
+  - [welder2, right_knee_link]
+  - [welder2, waist_yaw_link]
+  - [welder2, waist_roll_link]
+  - [welder2, torso_link]
+  - [welder2, logo_link]
+  - [welder2, imu_in_torso]
+  - [welder2, imu_in_pelvis]
+  - [welder2, right_shoulder_pitch_link]
+  - [welder2, right_shoulder_roll_link]
+  - [welder2, right_shoulder_yaw_link]
+  - [welder2, right_elbow_link]
+  - [welder2, right_wrist_roll_link]
+  - [welder2, right_wrist_pitch_link]
+  - [welder2, right_wrist_yaw_link]
+  - [end_effector, pelvis]
+  - [end_effector, pelvis_contour_link]
+  - [end_effector, right_hip_pitch_link]
+  - [end_effector, right_hip_roll_link]
+  - [end_effector, right_hip_yaw_link]
+  - [end_effector, right_knee_link]
+  - [end_effector, waist_yaw_link]
+  - [end_effector, waist_roll_link]
+  - [end_effector, torso_link]
+  - [end_effector, logo_link]
+  - [end_effector, imu_in_torso]
+  - [end_effector, imu_in_pelvis]
+  - [end_effector, right_shoulder_pitch_link]
+  - [end_effector, right_shoulder_roll_link]
+  - [end_effector, right_shoulder_yaw_link]
+  - [end_effector, right_elbow_link]
+  - [end_effector, right_wrist_roll_link]
+  - [end_effector, right_wrist_pitch_link]
+  - [end_effector, right_wrist_yaw_link]

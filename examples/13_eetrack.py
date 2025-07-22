@@ -12,8 +12,10 @@ import viser
 from viser.extras import ViserUrdf
 import yaml
 import yourdfpy
+import trimesh
 from eetrack.utils.weld_objects import WeldObject
 from jaxls import TerminationConfig, TrustRegionConfig
+from pyroki.collision._robot_collision_custom import RobotCollision
 
 
 class TrackingWeights(TypedDict):
@@ -50,7 +52,17 @@ def load_robot(config):
             joint.type = "fixed"
             joint.origin = urdf_obj.get_transform(joint.child, joint.parent)
     modified_urdf = yourdfpy.URDF(urdf_obj.robot, mesh_dir=Path(urdf_path).parent)
-    return pk.Robot.from_urdf(modified_urdf), modified_urdf
+
+    collision_cfg = config.get('collision', {})
+    ignore_pairs = tuple(tuple(pair) for pair in collision_cfg.get('ignore_pairs', []))
+    exclude_links = tuple(collision_cfg.get('exclude_links', []))
+    robot_collision = RobotCollision.from_urdf(
+        modified_urdf,
+        user_ignore_pairs=ignore_pairs,
+        ignore_immediate_adjacents=collision_cfg.get('ignore_adjacent_links', True),
+        exclude_links=exclude_links
+    )
+    return pk.Robot.from_urdf(modified_urdf), modified_urdf, robot_collision
 
 def sample_welding_object_pose(config):
     search_space = config.get('search_space', {})
@@ -139,37 +151,46 @@ def se3_from_pose(pose):
 
 se3_from_pose_vmap = jax.vmap(se3_from_pose, in_axes=0)
 
-def analyze_trajectory(robot, joints, target_poses, config):
-    # joints: (T, D), target_poses: (T, 7)
-    T = joints.shape[0]
-    # Vectorized forward kinematics
-    def get_ee_pose(cfg):
-        fk_poses_arr = robot.forward_kinematics(cfg=cfg)
-        ee_pose_in_root_arr = fk_poses_arr[robot.links.names.index("end_effector")]
-        return ee_pose_in_root_arr
-    get_ee_pose_vmap = jax.vmap(get_ee_pose, in_axes=0)
-    ee_poses = get_ee_pose_vmap(joints)  # (T, 7)
-    # Convert to SE3 objects
-    ee_se3s = se3_from_pose_vmap(ee_poses)
-    target_se3s = se3_from_pose_vmap(target_poses)
-    # Compute error
-    def calc_error(target_se3, ee_se3):
-        return (target_se3.inverse() @ ee_se3).log()
-    calc_error_vmap = jax.vmap(calc_error)
-    errors = calc_error_vmap(target_se3s, ee_se3s)  # (T, 6)
-    position_errors = jnp.linalg.norm(errors[:, :3], axis=1)
-    orientation_errors = jnp.linalg.norm(errors[:, 3:], axis=1)
-    max_position_error = float(jnp.max(position_errors))
-    max_orientation_error = float(jnp.max(orientation_errors))
-    # Smoothness cost
-    smoothness_costs = jnp.linalg.norm(joints[1:] - joints[:-1], axis=1) * config['weights']['smoothness']
-    max_smoothness_cost = float(jnp.max(smoothness_costs))
-    # Timesteps exceeding tolerance
-    error_timesteps = jnp.where((position_errors > config['tolerance']['position_error']) |
-                                (orientation_errors > config['tolerance']['orientation_error']))[0].tolist()
-    return max_position_error, max_orientation_error, max_smoothness_cost, error_timesteps
+def analyze_trajectory(robot, joints, target_poses, config, collision_pairs=None, robot_collision=None, safety_margin=None, collision_weight=None):
+    num_timesteps = joints.shape[0]
+    max_position_error = 0.0
+    max_orientation_error = 0.0
+    max_collision_cost = 0.0
+    
+    for t in range(num_timesteps):
+        robot_cfg = joints[t]
+        end_effector_link_idx = robot.links.names.index("end_effector")
+        fk_poses_arr = robot.forward_kinematics(cfg=robot_cfg)
+        ee_pose_in_root_arr = fk_poses_arr[end_effector_link_idx]
+        T_root_ee = jaxlie.SE3(ee_pose_in_root_arr)
+        T_world_root = jaxlie.SE3.identity()
+        ee_pose = T_world_root @ T_root_ee
+        target_se3 = jaxlie.SE3.from_rotation_and_translation(
+            jaxlie.SO3.from_quaternion_xyzw(target_poses[t, 3:]),
+            target_poses[t, :3]
+        )
+        error = (target_se3.inverse() @ ee_pose).log()
+        position_error = jnp.linalg.norm(error[:3])
+        orientation_error = jnp.linalg.norm(error[3:])
+        max_position_error = jnp.maximum(max_position_error, position_error)
+        max_orientation_error = jnp.maximum(max_orientation_error, orientation_error)
+        
+        # collision cost 계산
+        if collision_pairs is not None and robot_collision is not None and safety_margin is not None and collision_weight is not None:
+            link_indices_for_collision = [robot.links.names.index(name) for name in robot_collision.link_names]
+            active_idx_i, active_idx_j = convert_collision_pairs_to_indices(collision_pairs, robot_collision)
+            costs, _ = compute_collision_costs(
+                robot, robot_collision.coll, robot_cfg,
+                active_idx_i, active_idx_j,
+                safety_margin, collision_weight,
+                link_indices_for_collision
+            )
+            total_collision_cost = jnp.sum(costs)
+            max_collision_cost = jnp.maximum(max_collision_cost, total_collision_cost)
+    
+    return max_position_error, max_orientation_error, max_collision_cost
 
-def visualize_trajectory(server, urdf_vis, base_frame, Ts_world_root, joints, target_poses_se3, config, robot, position_failed, orientation_failed):
+def visualize_trajectory(server, urdf_vis, base_frame, Ts_world_root, joints, target_poses_se3, config, robot, position_failed, orientation_failed, robot_collision):
     num_timesteps = len(target_poses_se3)
     playing = server.gui.add_checkbox("playing", True)
     timestep_slider = server.gui.add_slider("timestep", 0, num_timesteps - 1, 1, 0)
@@ -180,6 +201,10 @@ def visualize_trajectory(server, urdf_vis, base_frame, Ts_world_root, joints, ta
         status_text.value = "❌ FAILED: " + ("Position" if position_failed else "") + (" and " if position_failed and orientation_failed else "") + ("Orientation" if orientation_failed else "") + " max error exceeded tolerance"
     else:
         status_text.value = "✅ PASSED: All errors within tolerance"
+    
+    # Get collision link indices
+    link_indices_for_collision = [robot.links.names.index(name) for name in robot_collision.link_names]
+    
     while True:
         with server.atomic():
             if playing.value:
@@ -205,17 +230,131 @@ def visualize_trajectory(server, urdf_vis, base_frame, Ts_world_root, joints, ta
                 wxyz=target_se3.rotation().wxyz,
                 position=target_se3.translation(),
             )
+            
+            # Update collision capsules
+            fk_results_collision = fk_poses_arr[jnp.array(link_indices_for_collision)]
+            coll_world = robot_collision.coll.transform(jaxlie.SE3(fk_results_collision))
+            
+            # Update each collision capsule
+            for i, link_name in enumerate(robot_collision.link_names):
+                capsule = jax.tree.map(lambda x: x[i], coll_world)
+                capsule_mesh = capsule.to_trimesh()
+                
+                # Create wireframe by extracting edges and creating thin cylinders
+                edges = capsule_mesh.edges_unique
+                vertices = capsule_mesh.vertices
+                
+                # Create thin cylinders for each edge to simulate wireframe
+                edge_meshes = []
+                for edge in edges:
+                    v1, v2 = vertices[edge[0]], vertices[edge[1]]
+                    edge_length = np.linalg.norm(v2 - v1)
+                    if edge_length > 0.001:  # Only create edge if length is significant
+                        # Create thin cylinder for this edge
+                        edge_cylinder = trimesh.creation.cylinder(
+                            radius=0.001,  # Very thin radius
+                            height=edge_length,
+                            sections=6
+                        )
+                        
+                        # Position and orient the cylinder
+                        center = (v1 + v2) / 2
+                        direction = v2 - v1
+                        direction_normalized = direction / np.linalg.norm(direction)
+                        
+                        # Create rotation matrix to align cylinder with edge
+                        z_axis = np.array([0, 0, 1])
+                        if np.allclose(direction_normalized, z_axis):
+                            rotation_matrix = np.eye(3)
+                        else:
+                            # Find rotation to align z-axis with edge direction
+                            rotation_axis = np.cross(z_axis, direction_normalized)
+                            if np.linalg.norm(rotation_axis) > 1e-6:
+                                rotation_axis = rotation_axis / np.linalg.norm(rotation_axis)
+                                angle = np.arccos(np.clip(np.dot(z_axis, direction_normalized), -1, 1))
+                                # Create rotation matrix using Rodrigues' formula
+                                K = np.array([[0, -rotation_axis[2], rotation_axis[1]],
+                                             [rotation_axis[2], 0, -rotation_axis[0]],
+                                             [-rotation_axis[1], rotation_axis[0], 0]])
+                                rotation_matrix = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
+                            else:
+                                rotation_matrix = np.eye(3)
+                        
+                        # Apply transform
+                        transform_matrix = np.eye(4)
+                        transform_matrix[:3, :3] = rotation_matrix
+                        transform_matrix[:3, 3] = center
+                        edge_cylinder.apply_transform(transform_matrix)
+                        
+                        edge_meshes.append(edge_cylinder)
+                
+                # Combine all edge meshes
+                if edge_meshes:
+                    wireframe_mesh = trimesh.util.concatenate(edge_meshes)
+                else:
+                    # Fallback: use original mesh
+                    wireframe_mesh = capsule_mesh
+                
+                # Update the mesh in viser scene with red color
+                wireframe_mesh.visual.face_colors = [255, 0, 0, 255]  # Red color
+                server.scene.add_mesh_trimesh(
+                    f"collision_capsule_{link_name}",
+                    wireframe_mesh,
+                )
         time.sleep(config['visualization']['sleep_time'])
+
+def convert_collision_pairs_to_indices(collision_pairs, robot_collision):
+    link_names = robot_collision.link_names
+    link_name_to_idx = {name: i for i, name in enumerate(link_names)}
+    active_idx_i = []
+    active_idx_j = []
+    for pair in collision_pairs:
+        if pair[0] in link_name_to_idx and pair[1] in link_name_to_idx:
+            active_idx_i.append(link_name_to_idx[pair[0]])
+            active_idx_j.append(link_name_to_idx[pair[1]])
+    return jnp.array(active_idx_i), jnp.array(active_idx_j)
+
+def compute_collision_costs(robot, coll_capsules, robot_cfg, active_idx_i, active_idx_j, safety_margin, collision_weight, link_indices_for_collision):
+    Ts_link_world_wxyz_xyz = robot.forward_kinematics(cfg=robot_cfg)
+    Ts_link_world_wxyz_xyz = Ts_link_world_wxyz_xyz[jnp.array(link_indices_for_collision)]
+    import jaxlie
+    coll_world = coll_capsules.transform(jaxlie.SE3(Ts_link_world_wxyz_xyz))
+    from pyroki.collision._collision import pairwise_collide
+    dist_matrix = pairwise_collide(coll_world, coll_world)
+    dists = dist_matrix[active_idx_i, active_idx_j]
+    costs = jnp.maximum(0, safety_margin - dists) * collision_weight
+    return costs, dists
+
+@jax.jit
+def collision_cost_jax(
+    robot_cfg,
+    robot,
+    coll_capsules,
+    active_idx_i,
+    active_idx_j,
+    safety_margin,
+    collision_weight,
+    link_indices_for_collision
+):
+    costs, _ = compute_collision_costs(robot, coll_capsules, robot_cfg, active_idx_i, active_idx_j, safety_margin, collision_weight, link_indices_for_collision)
+    return jnp.array([jnp.sum(costs)])
 
 def solve_eetrack_optimization(
     robot: pk.Robot,
+    robot_collision,
     target_poses: jnp.ndarray,  # (T, 7)
     weights: TrackingWeights,
+    safety_margin: float = 0.05,
     max_iterations = 100,
+    collision_pairs=None,
 ) -> Tuple[tuple[jaxlie.SE3, ...], jnp.ndarray]:
     timesteps = target_poses.shape[0]
     var_joints = robot.joint_var_cls(jnp.arange(timesteps))
-
+    coll_capsules = robot_collision.coll
+    
+    active_idx_i, active_idx_j = convert_collision_pairs_to_indices(collision_pairs, robot_collision)
+    
+    link_indices_for_collision = [robot.links.names.index(name) for name in robot_collision.link_names]
     @jaxls.Cost.create_factory
     def path_tracking_cost_t(
         var_values: jaxls.VarValues,
@@ -238,7 +377,6 @@ def solve_eetrack_optimization(
             orientation_error * weights["orientation_tracking"],
         ])
         return weighted_error
-
     @jaxls.Cost.create_factory
     def smoothness_cost_t(
         var_values: jaxls.VarValues,
@@ -248,12 +386,27 @@ def solve_eetrack_optimization(
         curr_cfg = var_values[var_robot_cfg_curr]
         prev_cfg = var_values[var_robot_cfg_prev]
         return (curr_cfg - prev_cfg) * weights["smoothness"]
-
-    # Safely generate costs using for loop
+    @jaxls.Cost.create_factory
+    def collision_cost_t(
+        var_values: jaxls.VarValues,
+        var_robot_cfg_t: jaxls.Var[jnp.ndarray],
+    ) -> jax.Array:
+        robot_cfg = var_values[var_robot_cfg_t]
+        return collision_cost_jax(
+            robot_cfg,
+            robot,
+            coll_capsules,
+            active_idx_i,
+            active_idx_j,
+            safety_margin,
+            weights["collision"],
+            link_indices_for_collision
+        )
     costs = []
     for t in range(timesteps):
         costs.append(path_tracking_cost_t(var_joints[t], target_poses[t]))
         costs.append(pk.costs.limit_cost(robot, var_joints[t], weights["joint_limits"]))
+        costs.append(collision_cost_t(var_joints[t]))
     for t in range(timesteps - 1):
         costs.append(smoothness_cost_t(var_joints[t+1], var_joints[t]))
     termination_config = TerminationConfig(
@@ -269,12 +422,53 @@ def solve_eetrack_optimization(
     solved_Ts_world_root = tuple([jaxlie.SE3.identity() for _ in range(timesteps)])
     solved_joints = jnp.stack([solution[var_joints[t]] for t in range(timesteps)])
     return solved_Ts_world_root, solved_joints
-solve_eetrack_optimization = jax.jit(solve_eetrack_optimization, static_argnames=["max_iterations"])
+
+def analyze_collision_costs(robot, robot_collision, joints, safety_margin, collision_weight, link_indices_for_collision, collision_pairs, topk=10):
+    import numpy as np
+
+    active_idx_i, active_idx_j = convert_collision_pairs_to_indices(collision_pairs, robot_collision)
+    
+    num_pairs = len(active_idx_i)
+    max_costs = np.zeros(num_pairs)
+    max_dists = np.zeros(num_pairs)
+    max_timestep = np.zeros(num_pairs, dtype=int)
+    
+    for t, robot_cfg in enumerate(joints):
+        costs, dists = compute_collision_costs(
+            robot, robot_collision.coll, robot_cfg, 
+            active_idx_i, active_idx_j, 
+            safety_margin, collision_weight, 
+            link_indices_for_collision
+        )
+        costs = np.array(costs)
+        dists = np.array(dists)
+        update_mask = costs > max_costs
+        max_costs[update_mask] = costs[update_mask]
+        max_dists[update_mask] = dists[update_mask]
+        max_timestep[update_mask] = t
+    
+    sorted_indices = np.argsort(-max_costs)
+    print(f"\n[최대 collision cost 기준 Top {topk} pairs]")
+    any_printed = False
+    for rank in range(topk):
+        i = sorted_indices[rank]
+        if max_costs[i] <= 0:
+            continue
+        link_names = robot_collision.link_names
+        pair = (link_names[active_idx_i[i]], link_names[active_idx_j[i]])
+        print(f"  {rank+1:2d}: {pair} | max_cost={max_costs[i]:.6f} | dist={max_dists[i]:.6f} | timestep={max_timestep[i]}")
+        any_printed = True
+    if not any_printed:
+        print("  (No active collision cost in any timestep)")
 
 def main():
     config, asset_dir = load_config()
+    collision_cfg = config['collision']
+    safety_margin = collision_cfg.get('safety_margin', 0.01)
+    collision_pairs = config.get('collision_pairs', [])
+
     sampled_x, sampled_y, sampled_yaw, sampled_z = sample_welding_object_pose(config)
-    robot, modified_urdf = load_robot(config)
+    robot, modified_urdf, robot_collision = load_robot(config)
     
     # Get welding object, pose, and parent pose (single source of truth)
     welding_object, welding_object_pose, parent_pose = (None, None, None)
@@ -293,6 +487,7 @@ def main():
         orientation_tracking=config['weights']['orientation_tracking'],
         smoothness=config['weights']['smoothness'],
         joint_limits=config['weights']['joint_limits'],
+        collision=config['weights'].get('collision', 1.0),
     )
     max_iterations = config.get('optimization', {}).get('max_iterations', 30)
     # Add welding_object, welding_object_pose, object_parent to viser.scene (as in old version)
@@ -312,39 +507,143 @@ def main():
             wxyz=parent_pose.rotation().wxyz[0],
             position=parent_pose.translation()[0],
         )
-    Ts_world_root, joints = solve_eetrack_optimization(robot, target_poses, weights, max_iterations)
+    
+    # Add collision capsules as wireframes
+    def add_collision_capsules():
+        # Get initial robot configuration (use sit terminal state)
+        sit_terminal_states = np.load(config['robot']['sit_terminal_states_path'])
+        idx = np.abs(sit_terminal_states["target_height"] - config['robot']['sit_target_height']).argmin()
+        initial_joint_pos = sit_terminal_states["joint_state"][idx, 0]
+        
+        # Map to robot's joint configuration
+        urdf_obj = yourdfpy.URDF.load(config['robot']['urdf_path'])
+        lab2yourdf = [np.where(sit_terminal_states["lab_joint"] == jn)[0].item() for jn in urdf_obj.actuated_joint_names]
+        initial_joints = initial_joint_pos[lab2yourdf]
+        
+        # Ensure correct shape
+        if len(initial_joints) != robot.joints.num_actuated_joints:
+            print(f"Shape mismatch! Using zeros instead.")
+            initial_joints = np.zeros(robot.joints.num_actuated_joints)
+        
+        # Get FK results for initial configuration
+        fk_results = robot.forward_kinematics(cfg=initial_joints)
+        
+        # Extract only the FK results for collision links
+        link_indices_for_collision = [robot.links.names.index(name) for name in robot_collision.link_names]
+        fk_results_collision = fk_results[jnp.array(link_indices_for_collision)]
+        
+        # Get collision capsules in world frame
+        coll_world = robot_collision.coll.transform(jaxlie.SE3(fk_results_collision))
+        
+        # Add each capsule as wireframe
+        for i, link_name in enumerate(robot_collision.link_names):
+            # Extract single capsule using tree_map
+            capsule = jax.tree.map(lambda x: x[i], coll_world)
+            capsule_mesh = capsule.to_trimesh()
+            
+            # Create wireframe by extracting edges and creating thin cylinders
+            edges = capsule_mesh.edges_unique
+            vertices = capsule_mesh.vertices
+            
+            # Create thin cylinders for each edge to simulate wireframe
+            edge_meshes = []
+            for edge in edges:
+                v1, v2 = vertices[edge[0]], vertices[edge[1]]
+                edge_length = np.linalg.norm(v2 - v1)
+                if edge_length > 0.001:  # Only create edge if length is significant
+                    # Create thin cylinder for this edge
+                    edge_cylinder = trimesh.creation.cylinder(
+                        radius=0.001,  # Very thin radius
+                        height=edge_length,
+                        sections=6
+                    )
+                    
+                    # Position and orient the cylinder
+                    center = (v1 + v2) / 2
+                    direction = v2 - v1
+                    direction_normalized = direction / np.linalg.norm(direction)
+                    
+                    # Create rotation matrix to align cylinder with edge
+                    z_axis = np.array([0, 0, 1])
+                    if np.allclose(direction_normalized, z_axis):
+                        rotation_matrix = np.eye(3)
+                    else:
+                        # Find rotation to align z-axis with edge direction
+                        rotation_axis = np.cross(z_axis, direction_normalized)
+                        if np.linalg.norm(rotation_axis) > 1e-6:
+                            rotation_axis = rotation_axis / np.linalg.norm(rotation_axis)
+                            angle = np.arccos(np.clip(np.dot(z_axis, direction_normalized), -1, 1))
+                            # Create rotation matrix using Rodrigues' formula
+                            K = np.array([[0, -rotation_axis[2], rotation_axis[1]],
+                                         [rotation_axis[2], 0, -rotation_axis[0]],
+                                         [-rotation_axis[1], rotation_axis[0], 0]])
+                            rotation_matrix = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
+                        else:
+                            rotation_matrix = np.eye(3)
+                    
+                    # Apply transform
+                    transform_matrix = np.eye(4)
+                    transform_matrix[:3, :3] = rotation_matrix
+                    transform_matrix[:3, 3] = center
+                    edge_cylinder.apply_transform(transform_matrix)
+                    
+                    edge_meshes.append(edge_cylinder)
+            
+            # Combine all edge meshes
+            if edge_meshes:
+                wireframe_mesh = trimesh.util.concatenate(edge_meshes)
+            else:
+                # Fallback: use original mesh
+                wireframe_mesh = capsule_mesh
+            
+                        # Add to viser scene with red color
+                # Set red color for the mesh
+                wireframe_mesh.visual.face_colors = [255, 0, 0, 255]  # Red color
+                server.scene.add_mesh_trimesh(
+                    f"collision_capsule_{link_name}",
+                    wireframe_mesh,
+                )
+    
+    add_collision_capsules()
+
+    Ts_world_root, joints = solve_eetrack_optimization(
+        robot, robot_collision, target_poses, weights,
+        safety_margin=safety_margin,
+        max_iterations=max_iterations,
+        collision_pairs=collision_pairs
+    )
     # Error analysis based on SE3 object list (as in old version)
-    max_position_error = 0.0
-    max_orientation_error = 0.0
-    error_timesteps = []
-    for t in range(num_timesteps):
-        robot_cfg = joints[t]
-        end_effector_link_idx = robot.links.names.index("end_effector")
-        fk_poses_arr = robot.forward_kinematics(cfg=robot_cfg)
-        ee_pose_in_root_arr = fk_poses_arr[end_effector_link_idx]
-        T_root_ee = jaxlie.SE3(ee_pose_in_root_arr)
-        T_world_root = jaxlie.SE3.identity()
-        ee_pose = T_world_root @ T_root_ee
-        error = (target_poses_se3[t].inverse() @ ee_pose).log()
-        position_error = np.linalg.norm(error[:3])
-        orientation_error = np.linalg.norm(error[3:])
-        max_position_error = max(max_position_error, position_error)
-        max_orientation_error = max(max_orientation_error, orientation_error)
-        if (position_error > config['tolerance']['position_error'] or 
-            orientation_error > config['tolerance']['orientation_error']):
-            error_timesteps.append(t)
+    max_position_error, max_orientation_error, max_collision_cost = analyze_trajectory(
+        robot, joints, target_poses, config, collision_pairs, robot_collision, safety_margin, weights['collision']
+    )
     position_failed = max_position_error > config['tolerance']['position_error']
     orientation_failed = max_orientation_error > config['tolerance']['orientation_error']
+    collision_failed = max_collision_cost > 0.001  # collision cost threshold
     print(f"=== Error Analysis ===")
     print(f"Max Position Error: {max_position_error:.4f} m (tolerance: {config['tolerance']['position_error']:.4f} m)")
     print(f"Max Orientation Error: {max_orientation_error:.4f} rad (tolerance: {config['tolerance']['orientation_error']:.4f} rad)")
-    print(f"Timesteps with errors: {len(error_timesteps)}/{num_timesteps}")
-    if position_failed or orientation_failed:
-        print(f"❌ FAILED: {'Position' if position_failed else ''}{' and ' if position_failed and orientation_failed else ''}{'Orientation' if orientation_failed else ''} max error exceeded tolerance")
+    print(f"Max Collision Cost: {max_collision_cost:.6f} (threshold: 0.001)")
+    if position_failed or orientation_failed or collision_failed:
+        failed_reasons = []
+        if position_failed:
+            failed_reasons.append("Position")
+        if orientation_failed:
+            failed_reasons.append("Orientation")
+        if collision_failed:
+            failed_reasons.append("Collision")
+        print(f"❌ FAILED: {' and '.join(failed_reasons)} max error exceeded tolerance")
     else:
         print(f"✅ PASSED: All errors within tolerance")
+
+    analyze_collision_costs(
+        robot, robot_collision, joints,
+        safety_margin, weights['collision'],
+        [robot.links.names.index(name) for name in robot_collision.link_names],
+        collision_pairs,
+        topk=10
+    )
     # Use target_poses_se3 in visualization loop
-    visualize_trajectory(server, urdf_vis, base_frame, Ts_world_root, joints, target_poses_se3, config, robot, position_failed, orientation_failed)
+    visualize_trajectory(server, urdf_vis, base_frame, Ts_world_root, joints, target_poses_se3, config, robot, position_failed, orientation_failed, robot_collision)
 
 if __name__ == "__main__":
     main()

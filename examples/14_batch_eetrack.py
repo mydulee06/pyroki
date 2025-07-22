@@ -12,6 +12,7 @@ import yaml
 import yourdfpy
 from eetrack.utils.weld_objects import WeldObject
 from jaxls import TerminationConfig, TrustRegionConfig
+from pyroki.collision._robot_collision_custom import RobotCollision
 
 
 class TrackingWeights(TypedDict):
@@ -19,6 +20,7 @@ class TrackingWeights(TypedDict):
     orientation_tracking: float
     smoothness: float
     joint_limits: float
+    collision: float
 
 def get_mid_sole_link_pose(left_sole_link_pose, right_sole_link_pose):
     return jaxlie.SE3.from_rotation_and_translation(
@@ -48,7 +50,53 @@ def load_robot(config):
             joint.type = "fixed"
             joint.origin = urdf_obj.get_transform(joint.child, joint.parent)
     modified_urdf = yourdfpy.URDF(urdf_obj.robot, mesh_dir=Path(urdf_path).parent)
-    return pk.Robot.from_urdf(modified_urdf), modified_urdf
+
+    collision_cfg = config.get('collision', {})
+    ignore_pairs = tuple(tuple(pair) for pair in collision_cfg.get('ignore_pairs', []))
+    exclude_links = tuple(collision_cfg.get('exclude_links', []))
+    robot_collision = RobotCollision.from_urdf(
+        modified_urdf,
+        user_ignore_pairs=ignore_pairs,
+        ignore_immediate_adjacents=collision_cfg.get('ignore_adjacent_links', True),
+        exclude_links=exclude_links
+    )
+    return pk.Robot.from_urdf(modified_urdf), modified_urdf, robot_collision
+
+def convert_collision_pairs_to_indices(collision_pairs, robot_collision):
+    link_names = robot_collision.link_names
+    link_name_to_idx = {name: i for i, name in enumerate(link_names)}
+    active_idx_i = []
+    active_idx_j = []
+    for pair in collision_pairs:
+        if pair[0] in link_name_to_idx and pair[1] in link_name_to_idx:
+            active_idx_i.append(link_name_to_idx[pair[0]])
+            active_idx_j.append(link_name_to_idx[pair[1]])
+    return jnp.array(active_idx_i), jnp.array(active_idx_j)
+
+def compute_collision_costs(robot, coll_capsules, robot_cfg, active_idx_i, active_idx_j, safety_margin, collision_weight, link_indices_for_collision):
+    Ts_link_world_wxyz_xyz = robot.forward_kinematics(cfg=robot_cfg)
+    Ts_link_world_wxyz_xyz = Ts_link_world_wxyz_xyz[jnp.array(link_indices_for_collision)]
+    import jaxlie
+    coll_world = coll_capsules.transform(jaxlie.SE3(Ts_link_world_wxyz_xyz))
+    from pyroki.collision._collision import pairwise_collide
+    dist_matrix = pairwise_collide(coll_world, coll_world)
+    dists = dist_matrix[active_idx_i, active_idx_j]
+    costs = jnp.maximum(0, safety_margin - dists) * collision_weight
+    return costs, dists
+
+@jax.jit
+def collision_cost_jax(
+    robot_cfg,
+    robot,
+    coll_capsules,
+    active_idx_i,
+    active_idx_j,
+    safety_margin,
+    collision_weight,
+    link_indices_for_collision
+):
+    costs, _ = compute_collision_costs(robot, coll_capsules, robot_cfg, active_idx_i, active_idx_j, safety_margin, collision_weight, link_indices_for_collision)
+    return jnp.array([jnp.sum(costs)])
 
 def sample_welding_object_pose(config):
     search_space = config.get('search_space', {})
@@ -150,10 +198,12 @@ def se3_from_pose(pose):
 
 se3_from_pose_vmap = jax.vmap(se3_from_pose, in_axes=0)
 
-def analyze_trajectory(robot, joints, target_poses, config):
+def analyze_trajectory(robot, joints, target_poses, config, collision_pairs=None, robot_collision=None, safety_margin=None, collision_weight=None):
     num_timesteps = joints.shape[0]
     max_position_error = 0.0
     max_orientation_error = 0.0
+    max_collision_cost = 0.0
+    
     for t in range(num_timesteps):
         robot_cfg = joints[t]
         end_effector_link_idx = robot.links.names.index("end_effector")
@@ -171,9 +221,26 @@ def analyze_trajectory(robot, joints, target_poses, config):
         orientation_error = jnp.linalg.norm(error[3:])
         max_position_error = jnp.maximum(max_position_error, position_error)
         max_orientation_error = jnp.maximum(max_orientation_error, orientation_error)
-    return max_position_error, max_orientation_error
+        
+        if collision_pairs is not None and robot_collision is not None and safety_margin is not None and collision_weight is not None:
+            link_indices_for_collision = [robot.links.names.index(name) for name in robot_collision.link_names]
+            active_idx_i, active_idx_j = convert_collision_pairs_to_indices(collision_pairs, robot_collision)
+            costs, _ = compute_collision_costs(
+                robot, robot_collision.coll, robot_cfg,
+                active_idx_i, active_idx_j,
+                safety_margin, collision_weight,
+                link_indices_for_collision
+            )
+            total_collision_cost = jnp.sum(costs)
+            max_collision_cost = jnp.maximum(max_collision_cost, total_collision_cost)
+    
+    return max_position_error, max_orientation_error, max_collision_cost
 
-def make_solve_eetrack_optimization_jitted(robot, weights, max_iterations):
+def make_solve_eetrack_optimization_jitted(robot, robot_collision, weights, max_iterations, collision_pairs, safety_margin):
+    active_idx_i, active_idx_j = convert_collision_pairs_to_indices(collision_pairs, robot_collision)
+    coll_capsules = robot_collision.coll
+    link_indices_for_collision = [robot.links.names.index(name) for name in robot_collision.link_names]
+
     @jax.jit
     def solve(target_poses):
         timesteps = target_poses.shape[0]
@@ -212,10 +279,28 @@ def make_solve_eetrack_optimization_jitted(robot, weights, max_iterations):
             prev_cfg = var_values[var_robot_cfg_prev]
             return (curr_cfg - prev_cfg) * weights["smoothness"]
 
+        @jaxls.Cost.create_factory
+        def collision_cost_t(
+            var_values: jaxls.VarValues,
+            var_robot_cfg_t: jaxls.Var[jnp.ndarray],
+        ) -> jax.Array:
+            robot_cfg = var_values[var_robot_cfg_t]
+            return collision_cost_jax(
+                robot_cfg,
+                robot,
+                coll_capsules,
+                active_idx_i,
+                active_idx_j,
+                safety_margin,
+                weights["collision"],
+                link_indices_for_collision
+            )
+
         costs = []
         for t in range(timesteps):
             costs.append(path_tracking_cost_t(var_joints[t], target_poses[t]))
             costs.append(pk.costs.limit_cost(robot, var_joints[t], weights["joint_limits"]))
+            costs.append(collision_cost_t(var_joints[t]))
         for t in range(timesteps - 1):
             costs.append(smoothness_cost_t(var_joints[t+1], var_joints[t]))
         termination_config = TerminationConfig(
@@ -248,7 +333,7 @@ def get_welding_path_batch(config, asset_dir, modified_urdf, sampled_x, sampled_
     return np.stack(welding_paths, axis=0)  # (B, T, 7)
 
 
-def process_batch_parallel(config, asset_dir, robot, modified_urdf, weights, max_iterations, samples, solve_fn):
+def process_batch_parallel(config, asset_dir, robot, robot_collision, modified_urdf, weights, max_iterations, samples, solve_fn, collision_pairs, safety_margin):
     # samples: (B, 4)
     B = samples.shape[0]
     sampled_x, sampled_y, sampled_yaw, sampled_z = samples[:,0], samples[:,1], samples[:,2], samples[:,3]
@@ -262,9 +347,9 @@ def process_batch_parallel(config, asset_dir, robot, modified_urdf, weights, max
     # batch error analysis (vmap)
     start_time = time.time()
     def analyze_fn(joints, target_poses):
-        return analyze_trajectory(robot, joints, target_poses, config)
+        return analyze_trajectory(robot, joints, target_poses, config, collision_pairs, robot_collision, safety_margin, weights['collision'])
     analyze_fn_vmap = jax.vmap(analyze_fn, in_axes=(0, 0))
-    max_position_errors, max_orientation_errors = analyze_fn_vmap(joints_batch, welding_paths)
+    max_position_errors, max_orientation_errors, max_collision_costs = analyze_fn_vmap(joints_batch, welding_paths)
     end_time = time.time()
     print(f"Batch Error Analysis completed in {end_time - start_time:.2f} seconds")
 
@@ -272,16 +357,20 @@ def process_batch_parallel(config, asset_dir, robot, modified_urdf, weights, max
     for i in range(B):
         pos_err = float(max_position_errors[i])
         ori_err = float(max_orientation_errors[i])
+        coll_cost = float(max_collision_costs[i])
         pos_tol = float(config['tolerance']['position_error'])
         ori_tol = float(config['tolerance']['orientation_error'])
         position_failed = pos_err > pos_tol
         orientation_failed = ori_err > ori_tol
-        success = (not position_failed and not orientation_failed)
+        collision_failed = coll_cost > 0.001  # collision cost threshold
+        success = (not position_failed and not orientation_failed and not collision_failed)
         results.append({
             'max_position_error': pos_err,
             'max_orientation_error': ori_err,
+            'max_collision_cost': coll_cost,
             'position_failed': bool(position_failed),
             'orientation_failed': bool(orientation_failed),
+            'collision_failed': bool(collision_failed),
             'sampled_x': float(sampled_x[i]),
             'sampled_y': float(sampled_y[i]),
             'sampled_yaw': float(sampled_yaw[i]),
@@ -308,19 +397,23 @@ def save_results(results, filename="batch_eetrack_results.json"):
 
 def main():
     config, asset_dir = load_config()
+    collision_cfg = config['collision']
+    safety_margin = collision_cfg.get('safety_margin', 0.05)
+    collision_pairs = config.get('collision_pairs', [])
     n_samples = config['search_space'].get('n_samples', 1000)
     batch_size = config['search_space'].get('batch_size', 100)
-    robot, modified_urdf = load_robot(config)
+    robot, modified_urdf, robot_collision = load_robot(config)
     weights = TrackingWeights(
         position_tracking=config['weights']['position_tracking'],
         orientation_tracking=config['weights']['orientation_tracking'],
         smoothness=config['weights']['smoothness'],
         joint_limits=config['weights']['joint_limits'],
+        collision=config['weights'].get('collision', 1.0),
     )
     max_iterations = config.get('optimization', {}).get('max_iterations', 30)
     
-    # SOLVE function definition
-    solve_fn = make_solve_eetrack_optimization_jitted(robot, weights, max_iterations)
+    # SOLVE function definition with collision
+    solve_fn = make_solve_eetrack_optimization_jitted(robot, robot_collision, weights, max_iterations, collision_pairs, safety_margin)
 
     num_batches = int(np.ceil(n_samples / batch_size))
     all_results = []
@@ -334,7 +427,7 @@ def main():
         start_time = time.time()
         # FUNCTION CALL! (process_batch_parallel: (B, 4)) :: Most Time-Consuming Function
         batch_results = process_batch_parallel(
-            config, asset_dir, robot, modified_urdf, weights, max_iterations, samples, solve_fn
+            config, asset_dir, robot, robot_collision, modified_urdf, weights, max_iterations, samples, solve_fn, collision_pairs, safety_margin
         )
         
         all_results.extend(batch_results[:valid_n])
