@@ -253,7 +253,7 @@ def solve_eetrack_optimization_with_base_transform(robot, robot_collision, targe
     for t in range(timesteps - 1):
         costs.append(smoothness_cost_t(var_joints[t+1], var_joints[t]))
     
-    termination_config = TerminationConfig(max_iterations=max_iterations)
+    termination_config = TerminationConfig(max_iterations=max_iterations, early_termination=False)
     solution = (
         jaxls.LeastSquaresProblem(costs, [var_joints])
         .analyze()
@@ -359,6 +359,31 @@ def sample_one_mid_sole_pose(target_welding_object_x: float,
     return mid_sole_x, mid_sole_y, mid_sole_z, mid_sole_yaw
 
 
+def sample_one_mid_sole_pose_from_search_space(target_welding_object_x: float, 
+                            target_welding_object_y: float, 
+                            target_welding_object_z: float, 
+                            target_welding_object_yaw: float,
+                            search_space: Dict[str, Any]):
+    print(f"🔄 Converting search space to world coordinates...")
+    print(f"📍 Target welding object (world): x={target_welding_object_x:.3f}, y={target_welding_object_y:.3f}, z={target_welding_object_z:.3f}, yaw={target_welding_object_yaw:.3f}")
+    
+    relative_x = np.random.uniform(*search_space['x_range'])
+    relative_y = np.random.uniform(*search_space['y_range'])
+    relative_z = search_space.get('z_height', 0.0)
+    relative_yaw = np.random.uniform(*search_space['angle_range'])
+    
+    print(f"   Using random sample: relative pose x={relative_x:.3f}, y={relative_y:.3f}, z={relative_z:.3f}, yaw={relative_yaw:.3f}")
+    
+    mid_sole_x, mid_sole_y, mid_sole_z, mid_sole_yaw = compose_transforms(
+        target_welding_object_x, target_welding_object_y, target_welding_object_z, target_welding_object_yaw,
+        relative_x, relative_y, relative_z, relative_yaw
+    )
+    
+    print(f"   -> world coordinates: x={mid_sole_x:.3f}, y={mid_sole_y:.3f}, z={mid_sole_z:.3f}, yaw={mid_sole_yaw:.3f}")
+    
+    return mid_sole_x, mid_sole_y, mid_sole_z, mid_sole_yaw
+
+
 def create_robot_base_transform(mid_sole_x, mid_sole_y, mid_sole_z, mid_sole_yaw, modified_urdf):
     """Create robot base transform from mid_sole pose"""
     T_world_mid_sole = jaxlie.SE3.from_rotation_and_translation(
@@ -376,14 +401,22 @@ def create_robot_base_transform(mid_sole_x, mid_sole_y, mid_sole_z, mid_sole_yaw
     return T_world_mid_sole @ T_robot_base_mid_sole.inverse()
 
 
-def run_optimization(config, robot, modified_urdf, robot_collision, welding_object, welding_object_pose, inverse_results, target_x, target_y, target_z, target_yaw, state):
+def run_optimization(config, robot, modified_urdf, robot_collision, welding_object, welding_object_pose, inverse_results, target_x, target_y, target_z, target_yaw, state, search_space=None, sampling_mode="inverse"):
     """Run optimization and update state"""
     print("🔄 Running optimization...")
-    
-    # Sample mid sole pose
-    mid_sole_x, mid_sole_y, mid_sole_z, mid_sole_yaw = sample_one_mid_sole_pose(
-        target_x, target_y, target_z, target_yaw, inverse_results
-    )
+    # 샘플링 방식 분기
+    if sampling_mode == "inverse":
+        mid_sole_x, mid_sole_y, mid_sole_z, mid_sole_yaw = sample_one_mid_sole_pose(
+            target_x, target_y, target_z, target_yaw, inverse_results
+        )
+    elif sampling_mode == "search_space":
+        if search_space is None:
+            raise ValueError("search_space argument is required!")
+        mid_sole_x, mid_sole_y, mid_sole_z, mid_sole_yaw = sample_one_mid_sole_pose_from_search_space(
+            target_x, target_y, target_z, target_yaw, search_space
+        )
+    else:
+        raise ValueError(f"Unknown sampling_mode: {sampling_mode}")
     T_world_robot_base = create_robot_base_transform(mid_sole_x, mid_sole_y, mid_sole_z, mid_sole_yaw, modified_urdf)
     
     # Get welding path
@@ -523,6 +556,7 @@ def main():
     
     task_name = task_names[0]
     task = task_config['tasks'][task_name]
+    search_space = task_config['search_space']
     welding_obj_pose = task['welding_object']
     target_x = welding_obj_pose['x']
     target_y = welding_obj_pose['y']
@@ -587,11 +621,17 @@ def main():
         ),
     )
 
+    # 샘플링 방식 선택 드롭다운 추가
+    sampling_mode_dropdown = server.gui.add_dropdown("Sampling Mode", ["inverse", "search_space"])
+
     # Sample & Optimize button
     def on_sample_and_optimize():
+        sampling_mode = sampling_mode_dropdown.value
         run_optimization(config, robot, modified_urdf, robot_collision, 
                         welding_object, welding_object_pose, inverse_results, 
-                        target_x, target_y, target_z, target_yaw, state)
+                        target_x, target_y, target_z, target_yaw, state,
+                        search_space=search_space,
+                        sampling_mode=sampling_mode)
         # Update slider range after optimization
         timestep_slider.max = len(state.joints) - 1
 

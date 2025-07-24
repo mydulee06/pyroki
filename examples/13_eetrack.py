@@ -151,7 +151,7 @@ def se3_from_pose(pose):
 
 se3_from_pose_vmap = jax.vmap(se3_from_pose, in_axes=0)
 
-def analyze_trajectory(robot, joints, target_poses, config, collision_pairs=None, robot_collision=None, safety_margin=None, collision_weight=None):
+def analyze_trajectory(robot, joints, target_poses, config, self_collision_pairs=None, robot_collision=None, world_collision=None, world_collision_pairs=None, safety_margin=None, collision_weight=None):
     num_timesteps = joints.shape[0]
     max_position_error = 0.0
     max_orientation_error = 0.0
@@ -176,14 +176,28 @@ def analyze_trajectory(robot, joints, target_poses, config, collision_pairs=None
         max_orientation_error = jnp.maximum(max_orientation_error, orientation_error)
         
         # collision cost 계산
-        if collision_pairs is not None and robot_collision is not None and safety_margin is not None and collision_weight is not None:
+        if robot_collision is not None and safety_margin is not None and collision_weight is not None:
+            self_active_idx_i, self_active_idx_j = np.array([]), np.array([])
+            if self_collision_pairs is not None:
+                self_active_idx_i, self_active_idx_j = convert_collision_pairs_to_indices(self_collision_pairs, robot_collision)
+            world_active_idx_i, world_active_idx_j = None, None
+            if world_collision is not None and world_collision_pairs:
+                world_link_names = [p[0] for p in world_collision_pairs]
+                world_object_names = [p[1] for p in world_collision_pairs]
+                world_active_idx_i = jnp.array([robot_collision.link_names.index(n) for n in world_link_names])
+                world_name_to_idx = {name: i for i, name in enumerate(world_collision.get_object_names())}
+                world_active_idx_j = jnp.array([world_name_to_idx[n] for n in world_object_names])
+            
             link_indices_for_collision = [robot.links.names.index(name) for name in robot_collision.link_names]
-            active_idx_i, active_idx_j = convert_collision_pairs_to_indices(collision_pairs, robot_collision)
             costs, _ = compute_collision_costs(
                 robot, robot_collision.coll, robot_cfg,
-                active_idx_i, active_idx_j,
+                self_active_idx_i, self_active_idx_j,
                 safety_margin, collision_weight,
-                link_indices_for_collision
+                link_indices_for_collision,
+                world_geom,
+                world_pose,
+                world_active_idx_i,
+                world_active_idx_j
             )
             total_collision_cost = jnp.sum(costs)
             max_collision_cost = jnp.maximum(max_collision_cost, total_collision_cost)
@@ -314,29 +328,60 @@ def convert_collision_pairs_to_indices(collision_pairs, robot_collision):
             active_idx_j.append(link_name_to_idx[pair[1]])
     return jnp.array(active_idx_i), jnp.array(active_idx_j)
 
-def compute_collision_costs(robot, coll_capsules, robot_cfg, active_idx_i, active_idx_j, safety_margin, collision_weight, link_indices_for_collision):
+def compute_collision_costs(
+    robot,
+    robot_coll,
+    robot_cfg,
+    self_active_idx_i, self_active_idx_j,
+    safety_margin,
+    collision_weight,
+    link_indices_for_collision,
+    world_robot_collision: RobotCollision = None, 
+    world_pose: jaxlie.SE3 = None,
+    world_active_idx_i=None,
+    world_active_idx_j=None,
+):
     Ts_link_world_wxyz_xyz = robot.forward_kinematics(cfg=robot_cfg)
-    Ts_link_world_wxyz_xyz = Ts_link_world_wxyz_xyz[jnp.array(link_indices_for_collision)]
-    import jaxlie
-    coll_world = coll_capsules.transform(jaxlie.SE3(Ts_link_world_wxyz_xyz))
-    from pyroki.collision._collision import pairwise_collide
-    dist_matrix = pairwise_collide(coll_world, coll_world)
-    dists = dist_matrix[active_idx_i, active_idx_j]
-    costs = jnp.maximum(0, safety_margin - dists) * collision_weight
-    return costs, dists
+    Ts_link_world_se3 = jaxlie.SE3(Ts_link_world_wxyz_xyz)
+    coll_robot_world = robot_coll.coll.transform(
+        Ts_link_world_se3[jnp.array(link_indices_for_collision)]
+    )
+
+    from pyroki.collision._collision import pairwise_collide #
+
+    dist_matrix = pairwise_collide(coll_robot_world, coll_robot_world)
+    self_dists = dist_matrix[self_active_idx_i, self_active_idx_j]
+    self_costs = jnp.maximum(0, safety_margin - self_dists) * collision_weight
+
+    if world_robot_collision is not None and world_pose is not None:
+        coll_world_obj = world_robot_collision.coll.transform(world_pose)
+        
+        world_dist_matrix = pairwise_collide(coll_robot_world, coll_world_obj)
+        world_dists = world_dist_matrix[world_active_idx_i, world_active_idx_j]
+        world_costs = jnp.maximum(0, safety_margin - world_dists) * collision_weight
+
+        return jnp.concatenate([self_costs, world_costs]), jnp.concatenate(
+            [self_dists, world_dists]
+        )
+
+    return self_costs, self_dists
 
 @jax.jit
 def collision_cost_jax(
     robot_cfg,
     robot,
     coll_capsules,
-    active_idx_i,
-    active_idx_j,
+    self_active_idx_i,
+    self_active_idx_j,
     safety_margin,
     collision_weight,
-    link_indices_for_collision
+    link_indices_for_collision,
+    world_robot_collision: RobotCollision = None, 
+    world_pose: jaxlie.SE3 = None,
+    world_active_idx_i=None,
+    world_active_idx_j=None
 ):
-    costs, _ = compute_collision_costs(robot, coll_capsules, robot_cfg, active_idx_i, active_idx_j, safety_margin, collision_weight, link_indices_for_collision)
+    costs, _ = compute_collision_costs(robot, coll_capsules, robot_cfg, self_active_idx_i, self_active_idx_j, safety_margin, collision_weight, link_indices_for_collision, world_geom, world_pose, world_active_idx_i, world_active_idx_j)
     return jnp.array([jnp.sum(costs)])
 
 def solve_eetrack_optimization(
@@ -344,15 +389,23 @@ def solve_eetrack_optimization(
     robot_collision,
     target_poses: jnp.ndarray,  # (T, 7)
     weights: TrackingWeights,
+    world_robot_collision: RobotCollision = None, 
+    world_pose: jaxlie.SE3 = None,
     safety_margin: float = 0.05,
     max_iterations = 100,
-    collision_pairs=None,
+    self_collision_pairs=None,
+    world_collision_pairs=None,
 ) -> Tuple[tuple[jaxlie.SE3, ...], jnp.ndarray]:
     timesteps = target_poses.shape[0]
     var_joints = robot.joint_var_cls(jnp.arange(timesteps))
     coll_capsules = robot_collision.coll
-    
-    active_idx_i, active_idx_j = convert_collision_pairs_to_indices(collision_pairs, robot_collision)
+
+    self_active_idx_i, self_active_idx_j = convert_collision_pairs_to_indices(self_collision_pairs, robot_collision)
+    world_active_idx_i, world_active_idx_j = None, None
+    if world_geom is not None and world_pose is not None and world_collision_pairs:
+        world_link_names = [p[0] for p in world_collision_pairs]
+        world_active_idx_i = jnp.array([robot_collision.link_names.index(n) for n in world_link_names])
+        world_active_idx_j = jnp.zeros_like(world_active_idx_i)
     
     link_indices_for_collision = [robot.links.names.index(name) for name in robot_collision.link_names]
     @jaxls.Cost.create_factory
@@ -396,11 +449,15 @@ def solve_eetrack_optimization(
             robot_cfg,
             robot,
             coll_capsules,
-            active_idx_i,
-            active_idx_j,
+            self_active_idx_i,
+            self_active_idx_j,
             safety_margin,
             weights["collision"],
-            link_indices_for_collision
+            link_indices_for_collision,
+            world_geom,
+            world_pose,
+            world_active_idx_i,
+            world_active_idx_j
         )
     costs = []
     for t in range(timesteps):
@@ -465,7 +522,7 @@ def main():
     config, asset_dir = load_config()
     collision_cfg = config['collision']
     safety_margin = collision_cfg.get('safety_margin', 0.01)
-    collision_pairs = config.get('collision_pairs', [])
+    self_collision_pairs = config.get('collision_pairs', [])
 
     sampled_x, sampled_y, sampled_yaw, sampled_z = sample_welding_object_pose(config)
     robot, modified_urdf, robot_collision = load_robot(config)
@@ -475,6 +532,22 @@ def main():
     if config["welding_path_from_object"]:
         welding_object, welding_object_pose, parent_pose = get_welding_object_and_pose(
             config, modified_urdf, sampled_x, sampled_y, sampled_yaw, sampled_z)
+
+    world_robot_collision = None
+    world_collision_pairs = []
+    if welding_object is not None:
+        welding_object_name = "welding_target"
+        world_coll_geom = Convex(convex=[welding_object.trimesh])
+        world_robot_collision = RobotCollision(
+            coll=world_coll_geom,
+            link_names=[welding_object_name],
+        )
+        world_collision_pairs = [
+            ("wrist_2_link", welding_object_name),
+            ("wrist_3_link", welding_object_name),
+            ("tcp", welding_object_name),
+            ("end_effector", welding_object_name),
+        ]
     welding_path = get_welding_path(config, asset_dir, modified_urdf, sampled_x, sampled_y, sampled_yaw, sampled_z)
     target_poses = make_target_poses(welding_path)  # (T, 7) jnp.ndarray
     target_poses_se3 = make_target_poses_se3(welding_path)  # SE3 object list (for visualization/analysis)
@@ -608,13 +681,23 @@ def main():
 
     Ts_world_root, joints = solve_eetrack_optimization(
         robot, robot_collision, target_poses, weights,
+        world_robot_collision=world_robot_collision,
+        world_pose=welding_object_pose[0],
         safety_margin=safety_margin,
         max_iterations=max_iterations,
-        collision_pairs=collision_pairs
+        self_collision_pairs=self_collision_pairs,
+        world_collision_pairs=world_collision_pairs,
     )
     # Error analysis based on SE3 object list (as in old version)
     max_position_error, max_orientation_error, max_collision_cost = analyze_trajectory(
-        robot, joints, target_poses, config, collision_pairs, robot_collision, safety_margin, weights['collision']
+        robot, joints, target_poses, config,
+        self_collision_pairs=self_collision_pairs,
+        robot_collision=robot_collision,
+        world_robot_collision=world_robot_collision,
+        world_pose=welding_object_pose[0],
+        safety_margin=safety_margin,
+        world_collision_pairs=world_collision_pairs,
+        collision_weight=weights['collision']
     )
     position_failed = max_position_error > config['tolerance']['position_error']
     orientation_failed = max_orientation_error > config['tolerance']['orientation_error']
@@ -639,7 +722,8 @@ def main():
         robot, robot_collision, joints,
         safety_margin, weights['collision'],
         [robot.links.names.index(name) for name in robot_collision.link_names],
-        collision_pairs,
+        self_collision_pairs,
+        world_collision_pairs=world_collision_pairs,
         topk=10
     )
     # Use target_poses_se3 in visualization loop

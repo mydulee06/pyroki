@@ -333,7 +333,7 @@ def get_welding_path_batch(config, asset_dir, modified_urdf, sampled_x, sampled_
     return np.stack(welding_paths, axis=0)  # (B, T, 7)
 
 
-def process_batch_parallel(config, asset_dir, robot, robot_collision, modified_urdf, weights, max_iterations, samples, solve_fn, collision_pairs, safety_margin):
+def process_batch_parallel(config, asset_dir, robot, robot_collision, modified_urdf, weights, max_iterations, samples, solve_fn, collision_pairs, safety_margin, batch_idx=None, num_batches=None):
     # samples: (B, 4)
     B = samples.shape[0]
     sampled_x, sampled_y, sampled_yaw, sampled_z = samples[:,0], samples[:,1], samples[:,2], samples[:,3]
@@ -352,6 +352,8 @@ def process_batch_parallel(config, asset_dir, robot, robot_collision, modified_u
     max_position_errors, max_orientation_errors, max_collision_costs = analyze_fn_vmap(joints_batch, welding_paths)
     end_time = time.time()
     print(f"Batch Error Analysis completed in {end_time - start_time:.2f} seconds")
+    if batch_idx is not None and num_batches is not None:
+        print(f"Batch {batch_idx+1}/{num_batches}")
 
     results = []
     for i in range(B):
@@ -427,7 +429,8 @@ def main():
         start_time = time.time()
         # FUNCTION CALL! (process_batch_parallel: (B, 4)) :: Most Time-Consuming Function
         batch_results = process_batch_parallel(
-            config, asset_dir, robot, robot_collision, modified_urdf, weights, max_iterations, samples, solve_fn, collision_pairs, safety_margin
+            config, asset_dir, robot, robot_collision, modified_urdf, weights, max_iterations, samples, solve_fn, collision_pairs, safety_margin,
+            batch_idx=batch_idx, num_batches=num_batches
         )
         
         all_results.extend(batch_results[:valid_n])
