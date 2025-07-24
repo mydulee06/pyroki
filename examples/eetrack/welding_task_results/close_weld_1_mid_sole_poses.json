@@ -1,0 +1,195 @@
+{
+  "task_name": "close_weld_1",
+  "task_data": {
+    "description": "Close range welding task",
+    "welding_object": {
+      "x": 0.6,
+      "y": 0.1,
+      "z": 0.35,
+      "yaw": 1.570796
+    },
+    "priority": 1,
+    "difficulty": "medium"
+  },
+  "welding_object": {
+    "x": 0.6,
+    "y": 0.1,
+    "z": 0.35,
+    "yaw": 1.570796
+  },
+  "sampled_mid_sole_poses": [
+    {
+      "x": 0.3437137139334087,
+      "y": -0.04967820013489263,
+      "z": 0.04999999999999999,
+      "yaw": 1.6309285863074179,
+      "original_sample_id": "unknown",
+      "original_success_metrics": {
+        "max_position_error": 0.0004942112718708813,
+        "max_orientation_error": 0.0009564957581460476,
+        "max_collision_cost": 0.0
+      },
+      "transformation_info": {
+        "relative_pose": {
+          "x": -0.14967828388793497,
+          "y": 0.2562862371525057,
+          "z": -0.3,
+          "yaw": 0.0601325863074178
+        },
+        "world_pose": {
+          "x": 0.3437137139334087,
+          "y": -0.04967820013489263,
+          "z": 0.04999999999999999,
+          "yaw": 1.6309285863074179
+        }
+      },
+      "actual_optimization_success": false,
+      "actual_optimization_metrics": {
+        "max_position_error": 0.010269228368997574,
+        "max_orientation_error": 0.010201315395534039,
+        "max_collision_cost": 0.0
+      }
+    },
+    {
+      "x": 0.2838529449854067,
+      "y": -0.44218368369428307,
+      "z": 0.04999999999999999,
+      "yaw": 2.0787316378570777,
+      "original_sample_id": "unknown",
+      "original_success_metrics": {
+        "max_position_error": 0.0009247715352103114,
+        "max_orientation_error": 0.0019215602660551667,
+        "max_collision_cost": 0.0
+      },
+      "transformation_info": {
+        "relative_pose": {
+          "x": -0.5421837870094982,
+          "y": 0.3161468778317156,
+          "z": -0.3,
+          "yaw": 0.5079356378570774
+        },
+        "world_pose": {
+          "x": 0.2838529449854067,
+          "y": -0.44218368369428307,
+          "z": 0.04999999999999999,
+          "yaw": 2.0787316378570777
+        }
+      },
+      "actual_optimization_success": false,
+      "actual_optimization_metrics": {
+        "max_position_error": 0.06610605120658875,
+        "max_orientation_error": 0.024877427145838737,
+        "max_collision_cost": 0.0
+      }
+    },
+    {
+      "x": 0.2584297180484413,
+      "y": -0.08675598861802647,
+      "z": 0.04999999999999999,
+      "yaw": 1.0578555176903817,
+      "original_sample_id": "unknown",
+      "original_success_metrics": {
+        "max_position_error": 0.0007754295947961509,
+        "max_orientation_error": 0.0014534780057147145,
+        "max_collision_cost": 0.0
+      },
+      "transformation_info": {
+        "relative_pose": {
+          "x": -0.18675610024144146,
+          "y": 0.3415702209206365,
+          "z": -0.3,
+          "yaw": -0.5129404823096184
+        },
+        "world_pose": {
+          "x": 0.2584297180484413,
+          "y": -0.08675598861802647,
+          "z": 0.04999999999999999,
+          "yaw": 1.0578555176903817
+        }
+      },
+      "actual_optimization_success": false,
+      "actual_optimization_metrics": {
+        "max_position_error": 0.00986617524176836,
+        "max_orientation_error": 0.008453408256173134,
+        "max_collision_cost": 0.0
+      }
+    },
+    {
+      "x": 0.4827102092592347,
+      "y": 0.2126484682113511,
+      "z": 0.04999999999999999,
+      "yaw": 0.2620182067102843,
+      "original_sample_id": "unknown",
+      "original_success_metrics": {
+        "max_position_error": 0.0003084497293457389,
+        "max_orientation_error": 0.0007894423906691372,
+        "max_collision_cost": 0.0
+      },
+      "transformation_info": {
+        "relative_pose": {
+          "x": 0.11264842988164006,
+          "y": 0.11728982755370351,
+          "z": -0.3,
+          "yaw": -1.3087777932897158
+        },
+        "world_pose": {
+          "x": 0.4827102092592347,
+          "y": 0.2126484682113511,
+          "z": 0.04999999999999999,
+          "yaw": 0.2620182067102843
+        }
+      },
+      "actual_optimization_success": false,
+      "actual_optimization_metrics": {
+        "max_position_error": 0.045589741319417953,
+        "max_orientation_error": 0.04640604555606842,
+        "max_collision_cost": 0.006435427814722061
+      }
+    },
+    {
+      "x": 0.29814359413930813,
+      "y": -0.3849235979588004,
+      "z": 0.04999999999999999,
+      "yaw": 1.7597846913199053,
+      "original_sample_id": "unknown",
+      "original_success_metrics": {
+        "max_position_error": 0.0008326423121616244,
+        "max_orientation_error": 0.0019057198660448194,
+        "max_collision_cost": 0.0
+      },
+      "transformation_info": {
+        "relative_pose": {
+          "x": -0.4849236966039074,
+          "y": 0.3018562473901187,
+          "z": -0.3,
+          "yaw": 0.18898869131990526
+        },
+        "world_pose": {
+          "x": 0.29814359413930813,
+          "y": -0.3849235979588004,
+          "z": 0.04999999999999999,
+          "yaw": 1.7597846913199053
+        }
+      },
+      "actual_optimization_success": false,
+      "actual_optimization_metrics": {
+        "max_position_error": 0.044200390577316284,
+        "max_orientation_error": 0.01844087429344654,
+        "max_collision_cost": 0.0
+      }
+    }
+  ],
+  "valid_poses": [],
+  "success": false,
+  "statistics": {
+    "total_samples": 5,
+    "valid_samples": 0,
+    "success_rate": 0.0
+  },
+  "success_criteria": {
+    "min_valid_poses": 3,
+    "max_position_error": 0.01,
+    "max_orientation_error": 0.1,
+    "max_collision_cost": 0.001
+  }
+}

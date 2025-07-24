@@ -1,0 +1,110 @@
+# Welding Task Configuration
+# This file defines welding object poses for specific welding tasks
+
+# Task definitions
+tasks:
+  # Example task 1: Simple horizontal welding
+  horizontal_weld_1:
+    description: "Horizontal welding on flat surface"
+    welding_object:
+      x: 1.2          # World frame X position (m)
+      y: 0.3          # World frame Y position (m)  
+      z: 0.3          # World frame Z position (m)
+      yaw: 0.0        # World frame yaw rotation (radians)
+    priority: 1       # Task priority (higher = more important)
+    difficulty: "easy"
+    
+  # Example task 2: Angled welding
+  angled_weld_1:
+    description: "Welding with 45 degree angle"
+    welding_object:
+      x: 0.8
+      y: -0.2
+      z: 0.4
+      yaw: 0.785398   # 45 degrees in radians
+    priority: 2
+    difficulty: "medium"
+    
+  # Example task 3: Complex positioning
+  complex_weld_1:
+    description: "Complex welding position"
+    welding_object:
+      x: 1.5
+      y: -0.4
+      z: 0.25
+      yaw: -0.523599  # -30 degrees in radians
+    priority: 3
+    difficulty: "hard"
+    
+  # Example task 4: Close range welding
+  close_weld_1:
+    description: "Close range welding task"
+    welding_object:
+      x: 0.6
+      y: 0.1
+      z: 0.35
+      yaw: 1.570796   # 90 degrees in radians
+    priority: 1
+    difficulty: "medium"
+
+# Batch processing configuration
+batch_config:
+  # Default number of mid_sole pose samples to generate per task
+  default_num_samples: 5
+  
+  # Output directory for results
+  output_dir: "welding_task_results"
+  
+  # Visualization settings
+  visualization:
+    enabled: true
+    save_plots: true
+    plot_format: "png"
+    
+  # Sampling strategy
+  sampling:
+    strategy: "random"      # "random" or "grid" or "diverse"
+    max_attempts: 100       # Maximum attempts to find valid poses
+    min_distance: 0.1       # Minimum distance between sampled poses (m)
+    
+# Task filtering
+task_filter:
+  # Only process tasks with these priorities (empty = all)
+  priority_filter: []       # e.g., [1, 2] to only process priority 1 and 2 tasks
+  
+  # Only process tasks with these difficulties (empty = all)  
+  difficulty_filter: []     # e.g., ["easy", "medium"] to skip hard tasks
+  
+  # Specific task names to process (empty = all)
+  task_name_filter: []      # e.g., ["horizontal_weld_1", "angled_weld_1"]
+
+# Success criteria
+success_criteria:
+  # Minimum number of valid mid_sole poses required per task
+  min_valid_poses: 3
+  
+  # Required success metrics from original optimization
+  max_position_error: 0.01      # meters
+  max_orientation_error: 0.1    # radians  
+  max_collision_cost: 0.001     # collision cost threshold
+
+# File paths
+file_paths:
+  # Path to inverse results JSON file (relative to this config file)
+  inverse_results_file: "../batch_eetrack_results_inverse.json"
+  
+  # Output file template (will be formatted with task name)
+  output_file_template: "{output_dir}/{task_name}_mid_sole_poses.json"
+  
+  # Plot file template (will be formatted with task name)
+  plot_file_template: "{output_dir}/{task_name}_poses_plot.png"
+
+# Coordinate system info
+coordinate_system:
+  description: "All poses are specified in world coordinate frame"
+  units:
+    position: "meters"
+    rotation: "radians"
+  conventions:
+    yaw: "counter-clockwise rotation around Z-axis"
+    origin: "world frame origin" 

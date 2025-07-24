@@ -12,8 +12,8 @@ welding_path_from_object: True
 welding_object:
   parent: mid_sole_link
   object_dir: "eetrack/weld_objects"
-  # yaw: 1.5707963268 # pi/2
-  # pose: [1.0, 0.0, 0.0, 0.0, 0.35, -0.25, 0.3] # wxyz_xyz
+  # yaw: 0.0 # pi/2
+  pose: [1.0, 0.0, 0.0, 0.0, 0.35, -0.25, 0.3] # wxyz_xyz
   object_name: "Circular_Body_Plate_110_80"
   segment_normal_deg_range: [179.0, 181.0]
   # pose: [0.0, 0.0, 0.0, 1.0, 0.35, -0.25, 0.3] # wxyz_xyz
@@ -26,13 +26,13 @@ welding_object:
 # Batch search space settings
 search_space:
   z_height: 0.3
-  x_range: [-0.6, 0.6]      # [min, max]
-  y_range: [-0.8, 0.0]    # [min, max]
-  angle_range: [-1.5707963268, 1.5707963268] # [min, max] (rad)
+  x_range: [-0.4, 0.8]      # [min, max]
+  y_range: [-0.9, 0.4]    # [min, max]
+  angle_range: [-1.5707963267, 1.5707963267] # [min, max] (rad)
   # x_range: [0.35, 0.35]      # [min, max]
   # y_range: [-0.25, -0.25]    # [min, max]
   # angle_range: [0.0, 0.0] # [min, max] (rad)
-  n_samples: 300
+  n_samples: 100000
   batch_size: 100
 
 # Robot configuration
@@ -51,11 +51,12 @@ robot:
 
 # Optimization weights
 weights:
-  position_tracking: 200.0
-  orientation_tracking: 100.0
-  smoothness: 50.0
-  joint_limits: 100.0
+  position_tracking: 100.0
+  orientation_tracking: 50.0
+  smoothness: 20.0
+  joint_limits: 1.0
   collision: 1.0
+  rest_pose: 0.0
 
 # Collision settings
 collision:

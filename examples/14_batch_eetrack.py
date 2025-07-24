@@ -305,7 +305,7 @@ def make_solve_eetrack_optimization_jitted(robot, robot_collision, weights, max_
             costs.append(smoothness_cost_t(var_joints[t+1], var_joints[t]))
         termination_config = TerminationConfig(
             max_iterations=max_iterations,
-            early_termination=True,
+            early_termination=False,
         )
         solution = (
             jaxls.LeastSquaresProblem(costs, [var_joints])
