@@ -16,10 +16,10 @@ import os
 import threading
 import random
 
-# Add parent directory to path to import from 13_eetrack
+# Add parent directory to path
 sys.path.append(str(Path(__file__).parent))
 
-# Import functions from 13_eetrack.py and sample_mid_sole_poses.py
+# Import functions and classes
 from eetrack.utils.weld_objects import WeldObject
 import pyroki as pk
 import yourdfpy
@@ -30,6 +30,7 @@ import trimesh
 import jaxls
 from jaxls import TerminationConfig
 
+
 class TrackingWeights(TypedDict):
     position_tracking: float
     orientation_tracking: float
@@ -37,27 +38,61 @@ class TrackingWeights(TypedDict):
     joint_limits: float
     collision: float
 
+
+class State:
+    """Shared state between main thread and visualization thread"""
+    def __init__(self, num_timesteps):
+        self.joints = jnp.zeros((num_timesteps, 18))  # Default joint configuration
+        self.Ts_world_root = [jaxlie.SE3.identity() for _ in range(num_timesteps)]
+        self.target_poses_se3 = None
+        self.max_position_error = 0.0
+        self.max_orientation_error = 0.0
+        self.max_collision_cost = 0.0
+        self.position_failed = False
+        self.orientation_failed = False
+        self.collision_failed = False
+
+
+def get_mid_sole_link_pose(left_sole_link_pose, right_sole_link_pose):
+    """Calculate mid point between left and right sole links"""
+    return jaxlie.SE3.from_rotation_and_translation(
+        rotation=jaxlie.SO3.exp(
+            (left_sole_link_pose.rotation().log() + right_sole_link_pose.rotation().log()) / 2
+        ),
+        translation=(left_sole_link_pose.translation() + right_sole_link_pose.translation()) / 2,
+    )
+
+
 def load_config():
+    """Load configuration from YAML file"""
     asset_dir = Path(__file__).parent / "eetrack"
     config_file = asset_dir / "config.yaml"
     with open(config_file, 'r') as f:
         config = yaml.safe_load(f)
     return config, asset_dir
 
+
 def load_robot(config):
+    """Load robot from URDF and create collision model"""
     urdf_path = config['robot']['urdf_path']
     urdf_obj = yourdfpy.URDF.load(urdf_path)
+    
+    # Set joint positions from sit terminal states
     sit_terminal_states = np.load(config['robot']['sit_terminal_states_path'])
     idx = np.abs(sit_terminal_states["target_height"] - config['robot']['sit_target_height']).argmin()
     joint_pos = sit_terminal_states["joint_state"][idx, 0]
     lab2yourdf = [np.where(sit_terminal_states["lab_joint"] == jn)[0].item() for jn in urdf_obj.actuated_joint_names]
     urdf_obj.update_cfg(joint_pos[lab2yourdf])
+    
+    # Fix non-movable joints
     for joint in urdf_obj.robot.joints:
         if joint.name in urdf_obj.actuated_joint_names and joint.name not in config['robot']['movable_joints']:
             joint.type = "fixed"
             joint.origin = urdf_obj.get_transform(joint.child, joint.parent)
+    
     modified_urdf = yourdfpy.URDF(urdf_obj.robot, mesh_dir=Path(urdf_path).parent)
 
+    # Create collision model
     collision_cfg = config.get('collision', {})
     ignore_pairs = tuple(tuple(pair) for pair in collision_cfg.get('ignore_pairs', []))
     exclude_links = tuple(collision_cfg.get('exclude_links', []))
@@ -67,27 +102,22 @@ def load_robot(config):
         ignore_immediate_adjacents=collision_cfg.get('ignore_adjacent_links', True),
         exclude_links=exclude_links
     )
+    
     return pk.Robot.from_urdf(modified_urdf), modified_urdf, robot_collision
 
-def get_mid_sole_link_pose(left_sole_link_pose, right_sole_link_pose):
-    return jaxlie.SE3.from_rotation_and_translation(
-        rotation=jaxlie.SO3.exp(
-            (left_sole_link_pose.rotation().log() + right_sole_link_pose.rotation().log()) / 2
-        ),
-        translation=(left_sole_link_pose.translation() + right_sole_link_pose.translation()) / 2,
-    )
 
 def get_welding_object_and_pose(config, modified_urdf, sampled_x=None, sampled_y=None, sampled_yaw=None, sampled_z=None):
+    """Create welding object and its pose"""
     welding_object_config = config["welding_object"].copy()
     welding_object_config.pop('pose', None)
     welding_object_config.pop('yaw', None)
+    
     px = sampled_x or 0.0
     py = sampled_y or 0.0
     pz = sampled_z or 0.0
     yaw = sampled_yaw or 0.0
-    so3 = jaxlie.SO3.from_rpy_radians(0.0, 0.0, yaw)
     
-    # Create pose in world coordinates for visualization
+    so3 = jaxlie.SO3.from_rpy_radians(0.0, 0.0, yaw)
     welding_object_pose_world = jaxlie.SE3.from_rotation_and_translation(so3, jnp.array([px, py, pz]))
     
     parent = welding_object_config.pop("parent", None)
@@ -99,15 +129,19 @@ def get_welding_object_and_pose(config, modified_urdf, sampled_x=None, sampled_y
         parent_pose = jaxlie.SE3.identity((1,))
     
     # For trajectory optimization, use parent-relative pose
-    welding_object_pose = parent_pose @ welding_object_pose_world
+    welding_object_pose = welding_object_pose_world
     
     welding_object = WeldObject(**welding_object_config)
-    return welding_object, welding_object_pose_world, parent_pose
+    return welding_object, welding_object_pose_world, welding_object_pose, parent_pose
+
 
 def make_target_poses(welding_path):
+    """Convert welding path to target poses array"""
     return jnp.asarray(welding_path)
 
+
 def make_target_poses_se3(welding_path):
+    """Convert welding path to SE3 object list for visualization"""
     return [
         jaxlie.SE3.from_rotation_and_translation(
             jaxlie.SO3.from_quaternion_xyzw(np.array(welding_path[i, 3:])),
@@ -116,7 +150,9 @@ def make_target_poses_se3(welding_path):
         for i in range(welding_path.shape[0])
     ]
 
+
 def convert_collision_pairs_to_indices(collision_pairs, robot_collision):
+    """Convert collision pairs to indices for collision computation"""
     link_names = robot_collision.link_names
     link_name_to_idx = {name: i for i, name in enumerate(link_names)}
     active_idx_i = []
@@ -127,7 +163,9 @@ def convert_collision_pairs_to_indices(collision_pairs, robot_collision):
             active_idx_j.append(link_name_to_idx[pair[1]])
     return jnp.array(active_idx_i), jnp.array(active_idx_j)
 
+
 def compute_collision_costs(robot, coll_capsules, robot_cfg, active_idx_i, active_idx_j, safety_margin, collision_weight, link_indices_for_collision):
+    """Compute collision costs for given robot configuration"""
     Ts_link_world_wxyz_xyz = robot.forward_kinematics(cfg=robot_cfg)
     Ts_link_world_wxyz_xyz = Ts_link_world_wxyz_xyz[jnp.array(link_indices_for_collision)]
     coll_world = coll_capsules.transform(jaxlie.SE3(Ts_link_world_wxyz_xyz))
@@ -137,16 +175,9 @@ def compute_collision_costs(robot, coll_capsules, robot_cfg, active_idx_i, activ
     costs = jnp.maximum(0, safety_margin - dists) * collision_weight
     return costs, dists
 
-def collision_cost_jax(
-    robot_cfg,
-    robot,
-    coll_capsules,
-    active_idx_i,
-    active_idx_j,
-    safety_margin,
-    collision_weight,
-    link_indices_for_collision
-):
+
+def collision_cost_jax(robot_cfg, robot, coll_capsules, active_idx_i, active_idx_j, safety_margin, collision_weight, link_indices_for_collision):
+    """JAX-compatible collision cost function"""
     if len(active_idx_i) == 0 or len(active_idx_j) == 0:
         return jnp.zeros(1)
     try:
@@ -155,21 +186,9 @@ def collision_cost_jax(
     except Exception:
         return jnp.zeros(1)
 
-def se3_from_pose(pose):
-    return jaxlie.SE3.from_rotation_and_translation(
-        jaxlie.SO3.from_quaternion_xyzw(pose[3:]), pose[:3]
-    )
 
-def solve_eetrack_optimization_with_base_transform(
-    robot: pk.Robot,
-    robot_collision,
-    target_poses: jnp.ndarray,
-    weights: TrackingWeights,
-    T_world_robot_base: jaxlie.SE3,
-    safety_margin: float = 0.05,
-    max_iterations: int = 100,
-    collision_pairs=None,
-):
+def solve_eetrack_optimization_with_base_transform(robot, robot_collision, target_poses, weights, T_world_robot_base, safety_margin=0.05, max_iterations=100, collision_pairs=None):
+    """Solve trajectory optimization with robot base transformation"""
     timesteps = target_poses.shape[0]
     var_joints = robot.joint_var_cls(jnp.arange(timesteps))
     coll_capsules = robot_collision.coll
@@ -182,12 +201,13 @@ def solve_eetrack_optimization_with_base_transform(
         active_idx_i = jnp.array([0])
         active_idx_j = jnp.array([0])
     
+    def se3_from_pose(pose):
+        return jaxlie.SE3.from_rotation_and_translation(
+            jaxlie.SO3.from_quaternion_xyzw(pose[3:]), pose[:3]
+        )
+    
     @jaxls.Cost.create_factory
-    def path_tracking_cost_t(
-        var_values: jaxls.VarValues,
-        var_robot_cfg_t: jaxls.Var[jnp.ndarray],
-        target_pose_t: jnp.ndarray,
-    ) -> jax.Array:
+    def path_tracking_cost_t(var_values, var_robot_cfg_t, target_pose_t):
         robot_cfg = var_values[var_robot_cfg_t]
         end_effector_link_idx = robot.links.names.index("end_effector")
         fk_poses_arr = robot.forward_kinematics(cfg=robot_cfg)
@@ -212,30 +232,17 @@ def solve_eetrack_optimization_with_base_transform(
         return weighted_error
     
     @jaxls.Cost.create_factory
-    def smoothness_cost_t(
-        var_values: jaxls.VarValues,
-        var_robot_cfg_curr: jaxls.Var[jnp.ndarray],
-        var_robot_cfg_prev: jaxls.Var[jnp.ndarray],
-    ) -> jax.Array:
+    def smoothness_cost_t(var_values, var_robot_cfg_curr, var_robot_cfg_prev):
         curr_cfg = var_values[var_robot_cfg_curr]
         prev_cfg = var_values[var_robot_cfg_prev]
         return (curr_cfg - prev_cfg) * weights["smoothness"]
     
     @jaxls.Cost.create_factory
-    def collision_cost_t(
-        var_values: jaxls.VarValues,
-        var_robot_cfg_t: jaxls.Var[jnp.ndarray],
-    ) -> jax.Array:
+    def collision_cost_t(var_values, var_robot_cfg_t):
         robot_cfg = var_values[var_robot_cfg_t]
         return collision_cost_jax(
-            robot_cfg,
-            robot,
-            coll_capsules,
-            active_idx_i,
-            active_idx_j,
-            safety_margin,
-            weights["collision"],
-            link_indices_for_collision
+            robot_cfg, robot, coll_capsules, active_idx_i, active_idx_j,
+            safety_margin, weights["collision"], link_indices_for_collision
         )
     
     costs = []
@@ -250,14 +257,14 @@ def solve_eetrack_optimization_with_base_transform(
     solution = (
         jaxls.LeastSquaresProblem(costs, [var_joints])
         .analyze()
-        .solve(termination = termination_config)
+        .solve(termination=termination_config)
     )
     solved_joints = jnp.stack([solution[var_joints[t]] for t in range(timesteps)])
     return solved_joints
 
-def analyze_trajectory_with_base_transform(
-    robot, joints, target_poses, T_world_robot_base, collision_pairs, robot_collision, safety_margin, collision_weight
-):
+
+def analyze_trajectory_with_base_transform(robot, joints, target_poses, T_world_robot_base, collision_pairs, robot_collision, safety_margin, collision_weight):
+    """Analyze trajectory errors and collision costs"""
     num_timesteps = joints.shape[0]
     max_position_error = 0.0
     max_orientation_error = 0.0
@@ -280,7 +287,7 @@ def analyze_trajectory_with_base_transform(
         max_position_error = jnp.maximum(max_position_error, position_error)
         max_orientation_error = jnp.maximum(max_orientation_error, orientation_error)
         
-        if collision_pairs is not None and robot_collision is not None and safety_margin is not None and collision_weight is not None:
+        if collision_pairs is not None and robot_collision is not None:
             link_indices_for_collision = [robot.links.names.index(name) for name in robot_collision.link_names]
             active_idx_i, active_idx_j = convert_collision_pairs_to_indices(collision_pairs, robot_collision)
             costs, _ = compute_collision_costs(
@@ -294,25 +301,19 @@ def analyze_trajectory_with_base_transform(
     
     return max_position_error, max_orientation_error, max_collision_cost
 
+
 def load_inverse_results(json_file: str) -> List[Dict[str, Any]]:
+    """Load successful samples from inverse results JSON file"""
     with open(json_file, 'r') as f:
         data = json.load(f)
     successful_samples = [sample for sample in data if sample.get('success', False)]
     print(f"Loaded {len(data)} total samples, {len(successful_samples)} successful samples")
     return successful_samples
 
+
 def compose_transforms(x1: float, y1: float, z1: float, yaw1: float,
                       x2: float, y2: float, z2: float, yaw2: float) -> Tuple[float, float, float, float]:
-    """
-    Compose two SE(3) transforms: T_result = T1 @ T2
-    
-    Where:
-    - T1 = (x1, y1, z1, yaw1) represents T_world_welding_object
-    - T2 = (x2, y2, z2, yaw2) represents T_welding_object_mid_sole (relative pose from inverse results)
-    - T_result represents T_world_mid_sole (final robot position in world)
-    
-    This computes: T_world_mid_sole = T_world_welding_object @ T_welding_object_mid_sole
-    """
+    """Compose two SE(3) transforms: T_result = T1 @ T2"""
     so3_1 = jaxlie.SO3.from_rpy_radians(0.0, 0.0, yaw1)
     T1 = jaxlie.SE3.from_rotation_and_translation(so3_1, jnp.array([x1, y1, z1]))
     so3_2 = jaxlie.SO3.from_rpy_radians(0.0, 0.0, yaw2)
@@ -322,40 +323,25 @@ def compose_transforms(x1: float, y1: float, z1: float, yaw1: float,
     rpy = T_result.rotation().as_rpy_radians()
     return float(translation[0]), float(translation[1]), float(translation[2]), float(rpy[2])
 
+
 def sample_one_mid_sole_pose(target_welding_object_x: float, 
                             target_welding_object_y: float, 
                             target_welding_object_z: float, 
                             target_welding_object_yaw: float,
                             inverse_results: List[Dict[str, Any]]) -> Tuple[float, float, float, float]:
-    """
-    Sample one good mid_sole pose from inverse results.
-    
-    The inverse_results contain relative poses from welding object to mid_sole.
-    We need to transform them to world coordinates:
-    T_world_mid_sole = T_world_welding_object @ T_welding_object_mid_sole
-    
-    Note: inverse_results['sampled_x/y/z/yaw'] are RELATIVE to welding object frame!
-    """
+    """Sample one good mid_sole pose from inverse results"""
     if not inverse_results:
         raise ValueError("No successful samples available")
     
     print(f"🔄 Converting relative poses to world coordinates...")
     print(f"📍 Target welding object (world): x={target_welding_object_x:.3f}, y={target_welding_object_y:.3f}, z={target_welding_object_z:.3f}, yaw={target_welding_object_yaw:.3f}")
     
-    # Sort by quality (lower error = better)
-    def get_quality_score(sample):
-        pos_err = sample.get('max_position_error', 1.0)
-        ori_err = sample.get('max_orientation_error', 1.0) 
-        col_cost = sample.get('max_collision_cost', 1.0)
-        return pos_err + ori_err + col_cost
+    successful_samples = [sample for sample in inverse_results if sample['success']]
+    if not successful_samples:
+        raise ValueError("No successful samples available")
     
-    sorted_samples = sorted(inverse_results, key=get_quality_score)
-    
-    # 상위 N개 중에서 random하게 하나 선택
-    N = min(10, len(sorted_samples))
-    random.seed()  # 시스템 시간 등으로 seed
-    sample = random.choice(sorted_samples[:N])
-    
+    sample = random.choice(successful_samples)
+
     relative_x = sample['sampled_x']
     relative_y = sample['sampled_y']
     relative_z = sample['sampled_z']
@@ -371,6 +357,7 @@ def sample_one_mid_sole_pose(target_welding_object_x: float,
     print(f"   -> world coordinates: x={mid_sole_x:.3f}, y={mid_sole_y:.3f}, z={mid_sole_z:.3f}, yaw={mid_sole_yaw:.3f}")
     
     return mid_sole_x, mid_sole_y, mid_sole_z, mid_sole_yaw
+
 
 def create_robot_base_transform(mid_sole_x, mid_sole_y, mid_sole_z, mid_sole_yaw, modified_urdf):
     """Create robot base transform from mid_sole pose"""
@@ -388,18 +375,25 @@ def create_robot_base_transform(mid_sole_x, mid_sole_y, mid_sole_z, mid_sole_yaw
     )
     return T_world_mid_sole @ T_robot_base_mid_sole.inverse()
 
-def run_optimization(config, robot, modified_urdf, robot_collision, welding_object, welding_object_pose, inverse_results, target_x, target_y, target_z, target_yaw):
-    print("Running optimization...")
+
+def run_optimization(config, robot, modified_urdf, robot_collision, welding_object, welding_object_pose, inverse_results, target_x, target_y, target_z, target_yaw, state):
+    """Run optimization and update state"""
+    print("🔄 Running optimization...")
+    
+    # Sample mid sole pose
     mid_sole_x, mid_sole_y, mid_sole_z, mid_sole_yaw = sample_one_mid_sole_pose(
         target_x, target_y, target_z, target_yaw, inverse_results
     )
     T_world_robot_base = create_robot_base_transform(mid_sole_x, mid_sole_y, mid_sole_z, mid_sole_yaw, modified_urdf)
     
-    pose_params = welding_object_pose.parameters()
-    welding_path_se3 = welding_object.get_welding_path(jaxlie.SE3(pose_params[None, :]))
-    welding_path_pos = welding_path_se3.translation()[0]
-    welding_path_xyzw = jnp.roll(welding_path_se3.rotation().wxyz, shift=-1, axis=-1)[0]
+    # Get welding path
+    pose_params = jnp.expand_dims(welding_object_pose.parameters(), axis=0)
+    welding_path_se3 = welding_object.get_welding_path(jaxlie.SE3(pose_params))
+    welding_path_pos = welding_path_se3.translation()
+    welding_path_xyzw = jnp.roll(welding_path_se3.rotation().wxyz, shift=-1, axis=-1)
     welding_path = jnp.concatenate([welding_path_pos, welding_path_xyzw], axis=-1)
+
+    welding_path = welding_path[0]
     
     target_poses = make_target_poses(welding_path)
     target_poses_se3 = make_target_poses_se3(welding_path)
@@ -407,6 +401,7 @@ def run_optimization(config, robot, modified_urdf, robot_collision, welding_obje
     weights = TrackingWeights(**config['weights'])
     collision_cfg = config.get('collision', {})
     
+    # Solve optimization
     joints = solve_eetrack_optimization_with_base_transform(
         robot, robot_collision, target_poses, weights, T_world_robot_base,
         safety_margin=collision_cfg.get('safety_margin', 0.01),
@@ -414,9 +409,107 @@ def run_optimization(config, robot, modified_urdf, robot_collision, welding_obje
         collision_pairs=config.get('collision_pairs', [])
     )
     
-    print("Optimization finished. Updating trajectory.")
+    # Analyze results
+    max_position_error, max_orientation_error, max_collision_cost = analyze_trajectory_with_base_transform(
+        robot, joints, target_poses, T_world_robot_base, 
+        config.get('collision_pairs', []), robot_collision, 
+        collision_cfg.get('safety_margin', 0.01), weights['collision']
+    )
+    
+    # Create Ts_world_root for visualization
+    Ts_world_root = []
+    for t in range(joints.shape[0]):
+        Ts_world_root.append(T_world_robot_base)
+    
+    # Update state
+    state.joints = joints
+    state.Ts_world_root = Ts_world_root
+    state.target_poses_se3 = target_poses_se3
+    state.max_position_error = max_position_error
+    state.max_orientation_error = max_orientation_error
+    state.max_collision_cost = max_collision_cost
+    state.position_failed = max_position_error > config['tolerance']['position_error']
+    state.orientation_failed = max_orientation_error > config['tolerance']['orientation_error']
+    state.collision_failed = max_collision_cost > 0.001
+    
+    # Print results
+    print(f"=== Error Analysis ===")
+    print(f"Max Position Error: {max_position_error:.4f} m (tolerance: {config['tolerance']['position_error']:.4f} m)")
+    print(f"Max Orientation Error: {max_orientation_error:.4f} rad (tolerance: {config['tolerance']['orientation_error']:.4f} rad)")
+    print(f"Max Collision Cost: {max_collision_cost:.6f} (threshold: 0.001)")
+    
+    if state.position_failed or state.orientation_failed or state.collision_failed:
+        failed_reasons = []
+        if state.position_failed:
+            failed_reasons.append("Position")
+        if state.orientation_failed:
+            failed_reasons.append("Orientation")
+        if state.collision_failed:
+            failed_reasons.append("Collision")
+        print(f"❌ FAILED: {' and '.join(failed_reasons)} max error exceeded tolerance")
+    else:
+        print(f"✅ PASSED: All errors within tolerance")
+    
+    print("✅ Optimization finished. Trajectory updated.")
+
+
+def animation_loop(server, base_frame, urdf_vis, playing_checkbox, timestep_slider, 
+                  current_error_text, status_text, state, config, robot):
+    """Animation loop running in background thread"""
+    while True:
+        with server.atomic():
+            if playing_checkbox.value:
+                timestep_slider.value = (timestep_slider.value + 1) % len(state.joints)
+            
+            tstep = timestep_slider.value
+            
+            if state.target_poses_se3 is not None and tstep < len(state.joints):
+                # Calculate current error
+                robot_cfg = state.joints[tstep]
+                end_effector_link_idx = robot.links.names.index("end_effector")
+                fk_poses_arr = robot.forward_kinematics(cfg=robot_cfg)
+                ee_pose_in_robot_base_arr = fk_poses_arr[end_effector_link_idx]
+                T_robot_base_ee = jaxlie.SE3(ee_pose_in_robot_base_arr)
+                ee_pose = state.Ts_world_root[tstep] @ T_robot_base_ee
+                
+                target_pose = state.target_poses_se3[tstep]
+                error = (target_pose.inverse() @ ee_pose).log()
+                current_position_error = np.linalg.norm(error[:3])
+                current_orientation_error = np.linalg.norm(error[3:])
+                
+                # Update error displays
+                current_error_text.value = f"Position: {current_position_error:.4f} m, Orientation: {current_orientation_error:.4f} rad"
+                
+                # Update status based on current error
+                if (current_position_error > config['tolerance']['position_error'] or 
+                    current_orientation_error > config['tolerance']['orientation_error']):
+                    status_text.value = "❌ ERROR: Current error exceeds tolerance"
+                elif state.position_failed or state.orientation_failed or state.collision_failed:
+                    status_text.value = "❌ FAILED: Max error exceeded tolerance"
+                else:
+                    status_text.value = "✅ PASSED: All errors within tolerance"
+                
+                # Update robot visualization
+                root_pose = state.Ts_world_root[tstep]
+                base_frame.wxyz = np.array(root_pose.rotation().wxyz)
+                base_frame.position = np.array(root_pose.translation())
+                urdf_vis.update_cfg(np.array(state.joints[tstep]))
+                
+                # Update target pose visualization
+                server.scene.add_frame(
+                    "/target_pose",
+                    axes_length=0.1,
+                    axes_radius=0.002,
+                    wxyz=np.array(target_pose.rotation().wxyz),
+                    position=np.array(target_pose.translation()),
+                )
+        
+        time.sleep(config['visualization']['sleep_time'])
+
 
 def main():
+    """Main function"""
+    # Load task configuration
     asset_dir = Path(__file__).parent / "eetrack"
     config_file = asset_dir / "welding_task_config.yaml"
 
@@ -427,6 +520,7 @@ def main():
     if not task_names:
         print("No tasks defined in welding_task_config.yaml!")
         return
+    
     task_name = task_names[0]
     task = task_config['tasks'][task_name]
     welding_obj_pose = task['welding_object']
@@ -437,47 +531,54 @@ def main():
 
     inverse_results_path = asset_dir / Path(task_config['file_paths']['inverse_results_file'])
 
-    config = load_config()
+    # Load configurations and robot
+    config, _ = load_config()
     robot, modified_urdf, robot_collision = load_robot(config)
+    
     try:
         inverse_results = load_inverse_results(str(inverse_results_path))
     except Exception as e:
         print(f"❌ Error loading inverse results: {e}")
         return
+    
     if not inverse_results:
         print("❌ No successful samples found")
         return
 
-    # welding object pose 생성
-    welding_object, welding_object_pose, _ = get_welding_object_and_pose(
+    # Create welding object
+    welding_object, welding_object_pose_world, welding_object_pose, _ = get_welding_object_and_pose(
         config, modified_urdf, target_x, target_y, target_yaw, target_z)
 
-    num_timesteps = len(inverse_results)
+    # Initialize state
+    num_timesteps = 100  # Default, will be updated after first optimization
+    state = State(num_timesteps)
 
-    # viser 서버 및 urdf 시각화
+    # Setup viser server and visualization
     server = viser.ViserServer()
     base_frame = server.scene.add_frame("/base", show_axes=False)
     urdf_vis = ViserUrdf(server, modified_urdf, root_node_name="/base")
 
-    # welding object mesh/frame 추가
-    mat = welding_object_pose.as_matrix()
+    # Add welding object to scene (fixed in world frame for visualization)
+    mat = welding_object_pose_world.as_matrix()
+    if mat.shape == (1, 4, 4):
+        mat = mat[0]  # Remove batch dimension
     server.scene.add_mesh_trimesh("welding_object", welding_object.trimesh.apply_transform(mat))
     server.scene.add_frame(
         "welding_object_pose", axes_length=0.1, axes_radius=0.002,
-        wxyz=welding_object_pose.rotation().wxyz, position=welding_object_pose.translation(),
+        wxyz=np.array(welding_object_pose_world.rotation().wxyz),
+        position=np.array(welding_object_pose_world.translation()),
     )
 
-    # GUI 컨트롤
-    playing_checkbox = server.gui.add_checkbox("playing", True)
-    timestep_slider = server.gui.add_slider("timestep", 0, num_timesteps - 1, 1, 0)
+    # GUI controls
+    playing_checkbox = server.gui.add_checkbox("Playing", True)
+    timestep_slider = server.gui.add_slider("Timestep", 0, num_timesteps - 1, 1, 0)
+    current_error_text = server.gui.add_text("Current Error", "Position: 0.0000 m, Orientation: 0.0000 rad")
+    status_text = server.gui.add_text("Status", "✅ PASSED")
 
-    # Add error display
-    current_error_text = server.gui.add_text("Current Error: ", "Position: 0.0000 m, Orientation: 0.0000 rad")
-    status_text = server.gui.add_text("Status: ", "✅ PASSED")
-
+    # Weight tuner
     weights = pk.viewer.WeightTuner(
         server,
-        TrackingWeights(  # type: ignore
+        TrackingWeights(
             position_tracking=config['weights']['position_tracking'],
             orientation_tracking=config['weights']['orientation_tracking'],
             smoothness=config['weights']['smoothness'],
@@ -486,112 +587,35 @@ def main():
         ),
     )
 
-    def generate_trajectory():
-        gen_button.disabled = True
-        run_optimization(config, robot, modified_urdf, robot_collision, welding_object, welding_object_pose, inverse_results, target_x, target_y, target_z, target_yaw)
-        gen_button.disabled = False
+    # Sample & Optimize button
+    def on_sample_and_optimize():
+        run_optimization(config, robot, modified_urdf, robot_collision, 
+                        welding_object, welding_object_pose, inverse_results, 
+                        target_x, target_y, target_z, target_yaw, state)
+        # Update slider range after optimization
+        timestep_slider.max = len(state.joints) - 1
 
-    gen_button = server.gui.add_button("Sample & Optimize!")
-    gen_button.on_click(lambda _: generate_trajectory())
+    gen_button = server.gui.add_button("Sample & Optimize")
+    gen_button.on_click(lambda _: on_sample_and_optimize())
 
-    generate_trajectory()
-    assert Ts_world_root is not None and joints is not None
+    # Run initial optimization
+    on_sample_and_optimize()
 
-    max_position_error, max_orientation_error, max_collision_cost = analyze_trajectory_with_base_transform(
-        robot, joints, target_poses, T_world_robot_base, config.get('collision_pairs', []), robot_collision, config.get('collision', {}).get('safety_margin', 0.01), config.get('weights', {}).get('collision', 0.0)
+    # Start animation loop in background thread
+    animation_thread = threading.Thread(
+        target=animation_loop,
+        args=(server, base_frame, urdf_vis, playing_checkbox, timestep_slider,
+              current_error_text, status_text, state, config, robot),
+        daemon=True
     )
+    animation_thread.start()
 
-    position_failed = max_position_error > config['tolerance']['position_error']
-    orientation_failed = max_orientation_error > config['tolerance']['orientation_error']
-    collision_failed = max_collision_cost > 0.001  # collision cost threshold
-
-    print(f"=== Error Analysis ===")    
-
-    print(f"Max Position Error: {max_position_error:.4f} m (tolerance: {config['tolerance']['position_error']:.4f} m)")
-    print(f"Max Orientation Error: {max_orientation_error:.4f} rad (tolerance: {config['tolerance']['orientation_error']:.4f} rad)")
-    print(f"Max Collision Cost: {max_collision_cost:.6f} (threshold: 0.001)")
-    if position_failed or orientation_failed or collision_failed:
-        failed_reasons = []
-
-        # Initialize error tracking
-        error_timesteps = []
-
-        # Calculate errors for all timesteps
-        for t in range(num_timesteps):
-            # Get current end effector pose
-            robot_cfg = joints[t]
-            end_effector_link_idx = robot.links.names.index("end_effector")
-            fk_poses_arr = robot.forward_kinematics(cfg=robot_cfg)
-            ee_pose_in_root_arr = fk_poses_arr[end_effector_link_idx]
-            T_root_ee = jaxlie.SE3(ee_pose_in_root_arr)
-            T_world_root = jaxlie.SE3.identity()
-            ee_pose = T_world_root @ T_root_ee
-            error = (target_poses[t].inverse() @ ee_pose).log()
-            position_error = onp.linalg.norm(error[:3])
-            orientation_error = onp.linalg.norm(error[3:])
-            max_position_error = max(max_position_error, position_error)
-            max_orientation_error = max(max_orientation_error, orientation_error)
-        
-        # Check if error exceeds tolerance
-        if (max_position_error > config['tolerance']['position_error'] or 
-            max_orientation_error > config['tolerance']['orientation_error']):
-            error_timesteps.append(t)
-
-    print(f"=== Error Analysis ===")
-    print(f"Max Position Error: {max_position_error:.4f} m (tolerance: {config['tolerance']['position_error']:.4f} m)")
-    print(f"Max Orientation Error: {max_orientation_error:.4f} rad (tolerance: {config['tolerance']['orientation_error']:.4f} rad)")
-    print(f"Timesteps with errors: {len(error_timesteps)}/{num_timesteps}")
-    
-    if position_failed or orientation_failed:
-        print(f"❌ FAILED: {'Position' if position_failed else ''}{' and ' if position_failed and orientation_failed else ''}{'Orientation' if orientation_failed else ''} max error exceeded tolerance")
-    else:
-        print(f"✅ PASSED: All errors within tolerance")
-
-    while True:
-        with server.atomic():
-            if playing.value:
-                timestep_slider.value = (timestep_slider.value + 1) % num_timesteps
-            tstep = timestep_slider.value
-            
-            # Calculate current error
-            robot_cfg = joints[tstep]
-            end_effector_link_idx = robot.links.names.index("end_effector")
-            fk_poses_arr = robot.forward_kinematics(cfg=robot_cfg)
-            ee_pose_in_root_arr = fk_poses_arr[end_effector_link_idx]
-            T_root_ee = jaxlie.SE3(ee_pose_in_root_arr)
-            T_world_root = jaxlie.SE3.identity()
-            ee_pose = T_world_root @ T_root_ee
-            
-            error = (target_poses[tstep].inverse() @ ee_pose).log()
-            current_position_error = onp.linalg.norm(error[:3])
-            current_orientation_error = onp.linalg.norm(error[3:])
-            
-            # Update error displays
-            current_error_text.value = f"Position: {current_position_error:.4f} m, Orientation: {current_orientation_error:.4f} rad"
-            
-            # Update status based on current error
-            if (current_position_error > config['tolerance']['position_error'] or 
-                current_orientation_error > config['tolerance']['orientation_error']):
-                status_text.value = "❌ ERROR: Current error exceeds tolerance"
-            elif position_failed or orientation_failed:
-                status_text.value = "❌ FAILED: Max error exceeded tolerance"
-            else:
-                status_text.value = "✅ PASSED: All errors within tolerance"
-            
-            base_frame.wxyz = onp.array(Ts_world_root[tstep].wxyz_xyz[:4])
-            base_frame.position = onp.array(Ts_world_root[tstep].wxyz_xyz[4:])
-            urdf_vis.update_cfg(onp.array(joints[tstep]))
-            
-            server.scene.add_frame(
-                "/target_pose",
-                axes_length=0.1,
-                axes_radius=0.002,
-                wxyz=target_poses[tstep].rotation().wxyz,
-                position=target_poses[tstep].translation(),
-            )
-
-        time.sleep(config['visualization']['sleep_time'])
-
+    # Keep main thread alive
+    try:
+        while True:
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        print("Shutting down...")
 
 
 if __name__ == "__main__":
