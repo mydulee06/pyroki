@@ -49,15 +49,24 @@ tasks:
 
 search_space:
   z_height: -0.37       # Need to be modified for each task
-  x_range: [-0.5, -0.2]      # [min, max]
-  y_range: [0.2346, 0.4586]    # [min, max]
-  angle_range: [-0.165, 0.435] # [min, max] (rad)
+  # x_range: [-0.5, -0.2]      # [min, max]
+  # y_range: [0.2346, 0.4586]    # [min, max]
+  # angle_range: [-0.165, 0.435] # [min, max] (rad)
+  x_range: [-0.45, -0.25]      # [min, max]
+  y_range: [0.2355, 0.4575]    # [min, max]
+  angle_range: [-0.16, 0.42] # [min, max] (rad)
 
 
 # Batch processing configuration
 batch_config:
-  # Default number of mid_sole pose samples to generate per task
-  default_num_samples: 5
+  # Number of mid_sole pose samples to generate per task
+  n_samples: 1000
+  
+  # Batch size for parallel processing
+  batch_size: 100
+  
+  # Selected task to process (if empty, processes all tasks)
+  selected_task: "horizontal_weld_1"
   
   # Output directory for results
   output_dir: "welding_task_results"
