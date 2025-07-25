@@ -1,4 +1,5 @@
 import time
+import argparse
 from pathlib import Path
 from typing import Tuple, TypedDict
 import numpy as np
@@ -37,11 +38,11 @@ def load_config():
         config = yaml.safe_load(f)
     return config, asset_dir
 
-def load_robot(config):
+def load_robot(config, sit_target_height):
     urdf_path = config['robot']['urdf_path']
     urdf_obj = yourdfpy.URDF.load(urdf_path)
     sit_terminal_states = np.load(config['robot']['sit_terminal_states_path'])
-    idx = np.abs(sit_terminal_states["target_height"] - config['robot']['sit_target_height']).argmin()
+    idx = np.abs(sit_terminal_states["target_height"] - sit_target_height).argmin()
     joint_pos = sit_terminal_states["joint_state"][idx, 0]
     lab2yourdf = [np.where(sit_terminal_states["lab_joint"] == jn)[0].item() for jn in urdf_obj.actuated_joint_names]
     urdf_obj.update_cfg(joint_pos[lab2yourdf])
@@ -398,13 +399,19 @@ def save_results(results, filename="batch_eetrack_results.json"):
 
 
 def main():
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Batch EETrack optimization with configurable sit target height')
+    parser.add_argument('--sit_target_height', type=float, default=0.37, 
+                       help='Target height for sitting position in meters (default: 0.37)')
+    args = parser.parse_args()
+    
     config, asset_dir = load_config()
     collision_cfg = config['collision']
     safety_margin = collision_cfg.get('safety_margin', 0.05)
     collision_pairs = config.get('collision_pairs', [])
     n_samples = config['search_space'].get('n_samples', 1000)
     batch_size = config['search_space'].get('batch_size', 100)
-    robot, modified_urdf, robot_collision = load_robot(config)
+    robot, modified_urdf, robot_collision = load_robot(config, args.sit_target_height)
     weights = TrackingWeights(
         position_tracking=config['weights']['position_tracking'],
         orientation_tracking=config['weights']['orientation_tracking'],
@@ -413,6 +420,13 @@ def main():
         collision=config['weights'].get('collision', 1.0),
     )
     max_iterations = config.get('optimization', {}).get('max_iterations', 30)
+    
+    # Create filename with sit_target_height
+    height_cm = int(args.sit_target_height * 100)  # Convert to cm
+    results_filename = f"batch_eetrack_results_{height_cm}.json"
+    
+    print(f"Using sit_target_height: {args.sit_target_height}m ({height_cm}cm)")
+    print(f"Results will be saved to: {results_filename}")
     
     # SOLVE function definition with collision
     solve_fn = make_solve_eetrack_optimization_jitted(robot, robot_collision, weights, max_iterations, collision_pairs, safety_margin)
@@ -435,7 +449,7 @@ def main():
         
         all_results.extend(batch_results[:valid_n])
 
-    save_results(all_results)
+    save_results(all_results, results_filename)
 
 if __name__ == "__main__":
     main()
