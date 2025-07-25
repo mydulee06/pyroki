@@ -148,7 +148,10 @@ def main():
     if args.output:
         output_path = Path(args.output)
     else:
-        output_path = input_path.parent / (input_path.stem + "_inverse" + input_path.suffix)
+        # Save to files/batch_results directory
+        results_dir = Path("files/batch_results")
+        results_dir.mkdir(parents=True, exist_ok=True)
+        output_path = results_dir / (input_path.stem + "_inverse" + input_path.suffix)
     
     # Process inverse transform
     try:

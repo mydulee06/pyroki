@@ -421,9 +421,11 @@ def main():
     )
     max_iterations = config.get('optimization', {}).get('max_iterations', 30)
     
-    # Create filename with sit_target_height
+    # Create filename with sit_target_height and save to batch_results directory
     height_cm = int(args.sit_target_height * 100)  # Convert to cm
-    results_filename = f"batch_eetrack_results_{height_cm}.json"
+    results_dir = Path("files/batch_results")
+    results_dir.mkdir(parents=True, exist_ok=True)
+    results_filename = results_dir / f"batch_eetrack_results_{height_cm}.json"
     
     print(f"Using sit_target_height: {args.sit_target_height}m ({height_cm}cm)")
     print(f"Results will be saved to: {results_filename}")
