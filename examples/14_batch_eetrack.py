@@ -199,6 +199,61 @@ def se3_from_pose(pose):
 
 se3_from_pose_vmap = jax.vmap(se3_from_pose, in_axes=0)
 
+def analyze_trajectory_optimized(robot, joints, target_poses, config, collision_pairs=None, robot_collision=None, safety_margin=None, collision_weight=None):
+    """Optimized vectorized version of analyze_trajectory"""
+    # Pre-compute constants outside of timestep loop
+    end_effector_link_idx = robot.links.names.index("end_effector")
+    T_world_root = jaxlie.SE3.identity()
+    
+    if collision_pairs is not None and robot_collision is not None:
+        link_indices_for_collision = jnp.array([robot.links.names.index(name) for name in robot_collision.link_names])
+        active_idx_i, active_idx_j = convert_collision_pairs_to_indices(collision_pairs, robot_collision)
+    
+    # Vectorized computation for single timestep
+    def analyze_single_timestep(robot_cfg, target_pose):
+        # Forward kinematics
+        fk_poses_arr = robot.forward_kinematics(cfg=robot_cfg)
+        ee_pose_in_root_arr = fk_poses_arr[end_effector_link_idx]
+        T_root_ee = jaxlie.SE3(ee_pose_in_root_arr)
+        ee_pose = T_world_root @ T_root_ee
+        
+        # Target pose conversion
+        target_se3 = jaxlie.SE3.from_rotation_and_translation(
+            jaxlie.SO3.from_quaternion_xyzw(target_pose[3:]),
+            target_pose[:3]
+        )
+        
+        # Error computation
+        error = (target_se3.inverse() @ ee_pose).log()
+        position_error = jnp.linalg.norm(error[:3])
+        orientation_error = jnp.linalg.norm(error[3:])
+        
+        # Collision cost
+        if collision_pairs is not None and robot_collision is not None and safety_margin is not None and collision_weight is not None:
+            costs, _ = compute_collision_costs(
+                robot, robot_collision.coll, robot_cfg,
+                active_idx_i, active_idx_j,
+                safety_margin, collision_weight,
+                link_indices_for_collision
+            )
+            collision_cost = jnp.sum(costs)
+        else:
+            collision_cost = 0.0
+            
+        return position_error, orientation_error, collision_cost
+    
+    # Vectorize over all timesteps
+    analyze_timestep_vmap = jax.vmap(analyze_single_timestep, in_axes=(0, 0))
+    position_errors, orientation_errors, collision_costs = analyze_timestep_vmap(joints, target_poses)
+    
+    # Get maximum values
+    max_position_error = jnp.max(position_errors)
+    max_orientation_error = jnp.max(orientation_errors)
+    max_collision_cost = jnp.max(collision_costs)
+    
+    return max_position_error, max_orientation_error, max_collision_cost
+
+
 def analyze_trajectory(robot, joints, target_poses, config, collision_pairs=None, robot_collision=None, safety_margin=None, collision_weight=None):
     num_timesteps = joints.shape[0]
     max_position_error = 0.0
@@ -324,62 +379,262 @@ def make_solve_eetrack_optimization_jitted(robot, robot_collision, weights, max_
 def get_welding_path_batch(config, asset_dir, modified_urdf, sampled_x, sampled_y, sampled_yaw, sampled_z):
     # sampled_x, ...: (B,) ndarray
     B = sampled_x.shape[0]
-    welding_paths = []
-    for i in range(B):
-        welding_path = get_welding_path(
-            config, asset_dir, modified_urdf,
-            sampled_x[i], sampled_y[i], sampled_yaw[i], sampled_z[i]
-        )
-        welding_paths.append(welding_path)
-    return np.stack(welding_paths, axis=0)  # (B, T, 7)
+    
+    if not config["welding_path_from_object"]:
+        # Non-object path - just repeat the same path
+        welding_path = generate_demo_welding_path(config['welding_path'])
+        return np.tile(welding_path[None, :, :], (B, 1, 1))  # (B, T, 7)
+    
+    # Pre-compute reusable components
+    welding_object_config = config["welding_object"].copy()
+    welding_object_config.pop('pose', None)
+    welding_object_config.pop('yaw', None)
+    parent = welding_object_config.pop("parent", None)
+    
+    # Create WeldObject once and reuse
+    welding_object = WeldObject(**welding_object_config)
+    
+    # Pre-compute parent pose (same for all samples)
+    if parent == "mid_sole_link":
+        left_sole = jaxlie.SE3.from_matrix(modified_urdf.get_transform("left_sole_link")[None])
+        right_sole = jaxlie.SE3.from_matrix(modified_urdf.get_transform("right_sole_link")[None])
+        parent_pose = get_mid_sole_link_pose(left_sole, right_sole)
+    else:
+        parent_pose = jaxlie.SE3.identity((1,))
+    
+    try:
+        # Try JIT version first - fastest if compatible
+        @jax.jit
+        def compute_welding_path_single_jit(x, y, yaw, z):
+            so3 = jaxlie.SO3.from_rpy_radians(0.0, 0.0, yaw)
+            welding_object_pose = jaxlie.SE3.from_rotation_and_translation(so3, jnp.array([x, y, z]))
+            final_pose = parent_pose @ welding_object_pose
+            welding_path_se3 = welding_object.get_welding_path(final_pose)
+            welding_path_pos = welding_path_se3.translation()
+            welding_path_xyzw = jnp.roll(welding_path_se3.rotation().wxyz, shift=-1, axis=-1)
+            welding_path = jnp.concatenate([welding_path_pos, welding_path_xyzw], axis=-1)[0]
+            return welding_path
+        
+        compute_welding_path_vmap = jax.jit(jax.vmap(compute_welding_path_single_jit, in_axes=(0, 0, 0, 0)))
+        
+        # Convert to JAX arrays for vmap
+        sampled_x_jax = jnp.array(sampled_x)
+        sampled_y_jax = jnp.array(sampled_y)  
+        sampled_yaw_jax = jnp.array(sampled_yaw)
+        sampled_z_jax = jnp.array(sampled_z)
+        
+        # Compute all paths in parallel
+        welding_paths = compute_welding_path_vmap(sampled_x_jax, sampled_y_jax, sampled_yaw_jax, sampled_z_jax)
+        
+    except Exception as e:
+        print(f"JIT version failed ({e}), falling back to vmap-only version...")
+        
+        # Fallback: vmap without JIT - still much faster than original
+        def compute_welding_path_single(x, y, yaw, z):
+            so3 = jaxlie.SO3.from_rpy_radians(0.0, 0.0, yaw)
+            welding_object_pose = jaxlie.SE3.from_rotation_and_translation(so3, jnp.array([x, y, z]))
+            final_pose = parent_pose @ welding_object_pose
+            welding_path_se3 = welding_object.get_welding_path(final_pose)
+            welding_path_pos = welding_path_se3.translation()
+            welding_path_xyzw = jnp.roll(welding_path_se3.rotation().wxyz, shift=-1, axis=-1)
+            welding_path = jnp.concatenate([welding_path_pos, welding_path_xyzw], axis=-1)[0]
+            return welding_path
+        
+        compute_welding_path_vmap = jax.vmap(compute_welding_path_single, in_axes=(0, 0, 0, 0))
+        
+        # Convert to JAX arrays for vmap
+        sampled_x_jax = jnp.array(sampled_x)
+        sampled_y_jax = jnp.array(sampled_y)  
+        sampled_yaw_jax = jnp.array(sampled_yaw)
+        sampled_z_jax = jnp.array(sampled_z)
+        
+        # Compute all paths in parallel
+        welding_paths = compute_welding_path_vmap(sampled_x_jax, sampled_y_jax, sampled_yaw_jax, sampled_z_jax)
+    
+    return np.array(welding_paths)  # (B, T, 7)
 
 
 def process_batch_parallel(config, asset_dir, robot, robot_collision, modified_urdf, weights, max_iterations, samples, solve_fn, collision_pairs, safety_margin, batch_idx=None, num_batches=None):
     # samples: (B, 4)
+    start_time = time.time()
     B = samples.shape[0]
     sampled_x, sampled_y, sampled_yaw, sampled_z = samples[:,0], samples[:,1], samples[:,2], samples[:,3]
     welding_paths = get_welding_path_batch(config, asset_dir, modified_urdf, sampled_x, sampled_y, sampled_yaw, sampled_z)  # (B, T, 7)
-    # batch TrajOpt (vmap)
-    start_time = time.time()
-    Ts_world_root_batch, joints_batch = jax.vmap(solve_fn, in_axes=0)(welding_paths)
     end_time = time.time()
-    print(f"Batch TrajOpt completed in {end_time - start_time:.2f} seconds")
-
-    # batch error analysis (vmap)
+    batch_welding_path_time = end_time - start_time
+    
+    # batch TrajOpt (vmap) - Convert to JAX arrays for efficiency
     start_time = time.time()
-    def analyze_fn(joints, target_poses):
-        return analyze_trajectory(robot, joints, target_poses, config, collision_pairs, robot_collision, safety_margin, weights['collision'])
-    analyze_fn_vmap = jax.vmap(analyze_fn, in_axes=(0, 0))
-    max_position_errors, max_orientation_errors, max_collision_costs = analyze_fn_vmap(joints_batch, welding_paths)
+    welding_paths_jax = jnp.array(welding_paths)
+    Ts_world_root_batch, joints_batch = jax.vmap(solve_fn, in_axes=0)(welding_paths_jax)
     end_time = time.time()
-    print(f"Batch Error Analysis completed in {end_time - start_time:.2f} seconds")
-    if batch_idx is not None and num_batches is not None:
-        print(f"Batch {batch_idx+1}/{num_batches}")
-
+    batch_trajopt_time = end_time - start_time
+    
+    # batch error analysis (vmap) with optimized function
+    start_time = time.time()
+    
+    # JIT compile the analyze function for better performance
+    @jax.jit
+    def analyze_fn_jit(joints, target_poses):
+        return analyze_trajectory_optimized(robot, joints, target_poses, config, collision_pairs, robot_collision, safety_margin, weights['collision'])
+    
+    # Vectorize over batch dimension
+    analyze_fn_vmap = jax.vmap(analyze_fn_jit, in_axes=(0, 0))
+    max_position_errors, max_orientation_errors, max_collision_costs = analyze_fn_vmap(joints_batch, welding_paths_jax)
+    end_time = time.time()
+    batch_error_analysis_time = end_time - start_time
+    
+    # Vectorized result processing
+    start_time = time.time()
+    pos_tol = config['tolerance']['position_error']
+    ori_tol = config['tolerance']['orientation_error']
+    collision_threshold = 0.001
+    
+    # Convert to numpy for easier processing
+    max_position_errors_np = np.array(max_position_errors)
+    max_orientation_errors_np = np.array(max_orientation_errors)
+    max_collision_costs_np = np.array(max_collision_costs)
+    
+    # Vectorized failure detection
+    position_failed = max_position_errors_np > pos_tol
+    orientation_failed = max_orientation_errors_np > ori_tol
+    collision_failed = max_collision_costs_np > collision_threshold
+    success = ~(position_failed | orientation_failed | collision_failed)
+    
+    # Efficient batch result creation
     results = []
     for i in range(B):
-        pos_err = float(max_position_errors[i])
-        ori_err = float(max_orientation_errors[i])
-        coll_cost = float(max_collision_costs[i])
-        pos_tol = float(config['tolerance']['position_error'])
-        ori_tol = float(config['tolerance']['orientation_error'])
-        position_failed = pos_err > pos_tol
-        orientation_failed = ori_err > ori_tol
-        collision_failed = coll_cost > 0.001  # collision cost threshold
-        success = (not position_failed and not orientation_failed and not collision_failed)
         results.append({
-            'max_position_error': pos_err,
-            'max_orientation_error': ori_err,
-            'max_collision_cost': coll_cost,
-            'position_failed': bool(position_failed),
-            'orientation_failed': bool(orientation_failed),
-            'collision_failed': bool(collision_failed),
+            'max_position_error': float(max_position_errors_np[i]),
+            'max_orientation_error': float(max_orientation_errors_np[i]),
+            'max_collision_cost': float(max_collision_costs_np[i]),
+            'position_failed': bool(position_failed[i]),
+            'orientation_failed': bool(orientation_failed[i]),
+            'collision_failed': bool(collision_failed[i]),
             'sampled_x': float(sampled_x[i]),
             'sampled_y': float(sampled_y[i]),
             'sampled_yaw': float(sampled_yaw[i]),
             'sampled_z': float(sampled_z[i]),
-            'success': success
+            'success': bool(success[i])
         })
+    
+    end_time = time.time()
+    batch_result_processing_time = end_time - start_time
+    
+    print(f"Batch Welding Paths completed in {batch_welding_path_time:.2f} seconds")
+    print(f"Batch TrajOpt completed in {batch_trajopt_time:.2f} seconds")
+    print(f"Batch Error Analysis completed in {batch_error_analysis_time:.2f} seconds")
+    print(f"Batch Result Processing completed in {batch_result_processing_time:.2f} seconds")
+    if batch_idx is not None and num_batches is not None:
+        print(f"Batch {batch_idx+1}/{num_batches}")
+
+    return results
+
+
+def warmup_jit_functions(config, asset_dir, robot, robot_collision, modified_urdf, weights, solve_fn, collision_pairs, safety_margin):
+    """Warm up JIT functions with a small batch to avoid compilation overhead during actual processing"""
+    print("Warming up JIT functions...")
+    start_time = time.time()
+    
+    # Create a small sample for warmup
+    warmup_batch_size = 2
+    warmup_samples = sample_welding_object_pose_batch(config, warmup_batch_size)
+    sampled_x, sampled_y, sampled_yaw, sampled_z = warmup_samples[:,0], warmup_samples[:,1], warmup_samples[:,2], warmup_samples[:,3]
+    
+    # Warmup welding path computation
+    _ = get_welding_path_batch(config, asset_dir, modified_urdf, sampled_x, sampled_y, sampled_yaw, sampled_z)
+    
+    # Warmup trajectory optimization
+    welding_paths_jax = jnp.array(get_welding_path_batch(config, asset_dir, modified_urdf, sampled_x, sampled_y, sampled_yaw, sampled_z))
+    _, joints_batch = jax.vmap(solve_fn, in_axes=0)(welding_paths_jax)
+    
+    # Warmup error analysis
+    @jax.jit
+    def analyze_fn_jit(joints, target_poses):
+        return analyze_trajectory_optimized(robot, joints, target_poses, config, collision_pairs, robot_collision, safety_margin, weights['collision'])
+    
+    analyze_fn_vmap = jax.vmap(analyze_fn_jit, in_axes=(0, 0))
+    _ = analyze_fn_vmap(joints_batch, welding_paths_jax)
+    
+    end_time = time.time()
+    print(f"JIT warmup completed in {end_time - start_time:.2f} seconds")
+    
+    return analyze_fn_jit
+
+
+def process_batch_parallel_optimized(config, asset_dir, robot, robot_collision, modified_urdf, weights, max_iterations, samples, solve_fn, collision_pairs, safety_margin, analyze_fn_jit=None, batch_idx=None, num_batches=None):
+    """Optimized version that can reuse pre-compiled JIT functions"""
+    # samples: (B, 4)
+    start_time = time.time()
+    B = samples.shape[0]
+    sampled_x, sampled_y, sampled_yaw, sampled_z = samples[:,0], samples[:,1], samples[:,2], samples[:,3]
+    welding_paths = get_welding_path_batch(config, asset_dir, modified_urdf, sampled_x, sampled_y, sampled_yaw, sampled_z)  # (B, T, 7)
+    end_time = time.time()
+    batch_welding_path_time = end_time - start_time
+    
+    # batch TrajOpt (vmap) - Convert to JAX arrays for efficiency
+    start_time = time.time()
+    welding_paths_jax = jnp.array(welding_paths)
+    Ts_world_root_batch, joints_batch = jax.vmap(solve_fn, in_axes=0)(welding_paths_jax)
+    end_time = time.time()
+    batch_trajopt_time = end_time - start_time
+    
+    # batch error analysis (vmap) with pre-compiled function
+    start_time = time.time()
+    
+    if analyze_fn_jit is None:
+        # Fallback to compiling on-the-fly
+        @jax.jit
+        def analyze_fn_jit(joints, target_poses):
+            return analyze_trajectory_optimized(robot, joints, target_poses, config, collision_pairs, robot_collision, safety_margin, weights['collision'])
+    
+    # Vectorize over batch dimension
+    analyze_fn_vmap = jax.vmap(analyze_fn_jit, in_axes=(0, 0))
+    max_position_errors, max_orientation_errors, max_collision_costs = analyze_fn_vmap(joints_batch, welding_paths_jax)
+    end_time = time.time()
+    batch_error_analysis_time = end_time - start_time
+    
+    # Vectorized result processing
+    start_time = time.time()
+    pos_tol = config['tolerance']['position_error']
+    ori_tol = config['tolerance']['orientation_error']
+    collision_threshold = 0.001
+    
+    # Convert to numpy for easier processing
+    max_position_errors_np = np.array(max_position_errors)
+    max_orientation_errors_np = np.array(max_orientation_errors)
+    max_collision_costs_np = np.array(max_collision_costs)
+    
+    # Vectorized failure detection
+    position_failed = max_position_errors_np > pos_tol
+    orientation_failed = max_orientation_errors_np > ori_tol
+    collision_failed = max_collision_costs_np > collision_threshold
+    success = ~(position_failed | orientation_failed | collision_failed)
+    
+    # Efficient batch result creation
+    results = []
+    for i in range(B):
+        results.append({
+            'max_position_error': float(max_position_errors_np[i]),
+            'max_orientation_error': float(max_orientation_errors_np[i]),
+            'max_collision_cost': float(max_collision_costs_np[i]),
+            'position_failed': bool(position_failed[i]),
+            'orientation_failed': bool(orientation_failed[i]),
+            'collision_failed': bool(collision_failed[i]),
+            'sampled_x': float(sampled_x[i]),
+            'sampled_y': float(sampled_y[i]),
+            'sampled_yaw': float(sampled_yaw[i]),
+            'sampled_z': float(sampled_z[i]),
+            'success': bool(success[i])
+        })
+    
+    end_time = time.time()
+    batch_result_processing_time = end_time - start_time
+    
+    print(f"Batch Welding Paths: {batch_welding_path_time:.2f}s, TrajOpt: {batch_trajopt_time:.2f}s, Analysis: {batch_error_analysis_time:.2f}s, Processing: {batch_result_processing_time:.2f}s")
+    if batch_idx is not None and num_batches is not None:
+        print(f"Batch {batch_idx+1}/{num_batches}")
+
     return results
 
 
@@ -421,6 +676,9 @@ def main():
     )
     max_iterations = config.get('optimization', {}).get('max_iterations', 30)
     
+    # SOLVE function definition with collision
+    solve_fn = make_solve_eetrack_optimization_jitted(robot, robot_collision, weights, max_iterations, collision_pairs, safety_margin)
+    
     # Create filename with sit_target_height and save to batch_results directory
     height_cm = int(args.sit_target_height * 100)  # Convert to cm
     results_dir = Path("files/batch_results")
@@ -430,8 +688,8 @@ def main():
     print(f"Using sit_target_height: {args.sit_target_height}m ({height_cm}cm)")
     print(f"Results will be saved to: {results_filename}")
     
-    # SOLVE function definition with collision
-    solve_fn = make_solve_eetrack_optimization_jitted(robot, robot_collision, weights, max_iterations, collision_pairs, safety_margin)
+    # Warm up JIT functions
+    analyze_fn_jit = warmup_jit_functions(config, asset_dir, robot, robot_collision, modified_urdf, weights, solve_fn, collision_pairs, safety_margin)
 
     num_batches = int(np.ceil(n_samples / batch_size))
     all_results = []
@@ -442,10 +700,9 @@ def main():
         samples = sample_welding_object_pose_batch(config, current_batch_size)
         samples, valid_n = pad_samples(samples, batch_size)
 
-        start_time = time.time()
-        # FUNCTION CALL! (process_batch_parallel: (B, 4)) :: Most Time-Consuming Function
-        batch_results = process_batch_parallel(
-            config, asset_dir, robot, robot_collision, modified_urdf, weights, max_iterations, samples, solve_fn, collision_pairs, safety_margin,
+        # FUNCTION CALL! (process_batch_parallel_optimized: (B, 4)) :: Most Time-Consuming Function
+        batch_results = process_batch_parallel_optimized(
+            config, asset_dir, robot, robot_collision, modified_urdf, weights, max_iterations, samples, solve_fn, collision_pairs, safety_margin, analyze_fn_jit,
             batch_idx=batch_idx, num_batches=num_batches
         )
         
