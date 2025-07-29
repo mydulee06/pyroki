@@ -6,7 +6,7 @@ Runs the complete pipeline: batch_eetrack -> inverse_transform -> json_to_pt_con
 Usage:
 python run_batch_pipeline.py --sit_target_height 0.37
 python run_batch_pipeline.py --sit_target_height 0.35 --z_height 0.1
-python run_batch_pipeline.py --sit_target_height 0.35 --skip_batch_eetrack
+python run_batch_pipeline.py --sit_target_height 0.35 --skip_batch_eetrack --quiet
 """
 
 import argparse
@@ -89,6 +89,10 @@ def main():
                        help='Skip cma_es step')
     parser.add_argument('--exp_prefix', type=str, default=None,
                        help='Experiment prefix for CMA-ES (default: auto-generated)')
+    parser.add_argument('--quiet', '-q', action='store_true',
+                       help='Suppress optimization logs and warnings')
+    parser.add_argument('--verbose', '-v', action='store_true',
+                       help='Show detailed optimization logs')
     
     args = parser.parse_args()
     
@@ -132,6 +136,10 @@ def main():
         ]
         if args.z_height is not None:
             cmd.extend(["--z_height", str(args.z_height)])
+        if args.quiet:
+            cmd.append("--quiet")
+        if args.verbose:
+            cmd.append("--verbose")
         run_command(cmd, "Running batch EETrack optimization")
     else:
         print(f"\n⏭️  Skipping batch_eetrack step")

@@ -3,6 +3,17 @@ import argparse
 from pathlib import Path
 from typing import Tuple, TypedDict
 import numpy as np
+import logging
+import warnings
+import os
+
+# Pre-configure environment for minimal logging (before JAX import)
+os.environ.setdefault('JAX_LOG_COMPILES', '0')
+os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '3')
+os.environ.setdefault('XLA_FLAGS', '--xla_hlo_profile=false')
+# Try to disable loguru before any imports
+os.environ.setdefault('LOGURU_LEVEL', 'CRITICAL')
+
 import jax
 import jax.numpy as jnp
 import jax_dataclasses as jdc
@@ -14,6 +25,67 @@ import yourdfpy
 from eetrack.utils.weld_objects import WeldObject
 from jaxls import TerminationConfig, TrustRegionConfig
 from pyroki.collision._robot_collision_custom import RobotCollision
+
+
+def setup_logging(quiet=False, verbose=False):
+    """Setup logging levels to control optimization output"""
+    if quiet:
+        # Keep root logger at INFO level for progress messages
+        logging.getLogger().setLevel(logging.INFO)
+        warnings.filterwarnings("ignore")
+        
+        # JAX specific settings
+        os.environ['JAX_LOG_COMPILES'] = '0'
+        os.environ['JAX_TRACEBACK_FILTERING'] = 'off'  # Reduce JAX traceback noise
+        jax.config.update('jax_log_compiles', False)
+        
+        # Suppress additional JAX/CUDA warnings
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress TensorFlow messages
+        os.environ['XLA_FLAGS'] = '--xla_hlo_profile=false'  # Suppress XLA profiling
+        
+        # Suppress only optimization-heavy loggers
+        optimization_loggers = [
+            'jaxls',                    # Main optimization library
+            'jaxls._py310._core',       # Optimization core
+            'pyroki._robot_urdf_parser', # URDF parsing debug messages
+            'jax._src',                 # JAX internal messages
+            'jaxlib.xla_extension',     # XLA messages
+        ]
+        
+        for logger_name in optimization_loggers:
+            try:
+                logging.getLogger(logger_name).setLevel(logging.ERROR)
+                logging.getLogger(logger_name).disabled = True
+            except:
+                pass
+                
+        # Suppress loguru messages (simplified approach)
+        try:
+            import loguru
+            # Simply disable loguru for specific modules
+            loguru.logger.disable("pyroki")
+            loguru.logger.disable("jaxls")
+            loguru.logger.disable("")  # Disable all loguru messages
+        except:
+            pass
+            
+    elif verbose:
+        # Show detailed logs
+        logging.getLogger().setLevel(logging.DEBUG)
+        os.environ['JAX_LOG_COMPILES'] = '1'
+        jax.config.update('jax_log_compiles', True)
+    else:
+        # Normal logging - suppress only the most verbose ones
+        logging.getLogger().setLevel(logging.INFO)
+        os.environ['JAX_LOG_COMPILES'] = '0'
+        jax.config.update('jax_log_compiles', False)
+        
+        # Even in normal mode, suppress very verbose loggers
+        try:
+            logging.getLogger('pyroki._robot_urdf_parser').setLevel(logging.WARNING)
+            logging.getLogger('jaxls._py310._core').setLevel(logging.WARNING)
+        except:
+            pass
 
 
 class TrackingWeights(TypedDict):
@@ -662,7 +734,14 @@ def main():
                        help='Target height for sitting position in meters (default: 0.37)')
     parser.add_argument('--z_height', type=float, default=None,
                        help='Z height for welding object sampling (default: use config value)')
+    parser.add_argument('--quiet', '-q', action='store_true',
+                       help='Suppress optimization logs and warnings')
+    parser.add_argument('--verbose', '-v', action='store_true',
+                       help='Show detailed optimization logs')
     args = parser.parse_args()
+    
+    # Setup logging based on arguments (do this first!)
+    setup_logging(quiet=args.quiet, verbose=args.verbose)
     
     config, asset_dir = load_config()
     collision_cfg = config['collision']
