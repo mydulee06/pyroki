@@ -111,12 +111,14 @@ def sample_welding_object_pose(config):
     print(f"Sampled welding object: x={x:.3f}, y={y:.3f}, z={z_height:.3f}, yaw={yaw:.3f} rad ({np.degrees(yaw):.1f} deg)")
     return x, y, yaw, z_height
 
-def sample_welding_object_pose_batch(config, batch_size):
+def sample_welding_object_pose_batch(config, batch_size, z_height=None):
     search_space = config.get('search_space', {})
     x_min, x_max = search_space.get('x_range', [-0.3, 0.3])
     y_min, y_max = search_space.get('y_range', [-0.5, -0.1])
     yaw_min, yaw_max = search_space.get('angle_range', [-np.pi/2, np.pi/2])
-    z_height = search_space.get('z_height', 0.0)
+    # Use provided z_height or fall back to config value
+    if z_height is None:
+        z_height = search_space.get('z_height', 0.0)
     x = np.random.uniform(x_min, x_max, size=batch_size)
     y = np.random.uniform(y_min, y_max, size=batch_size)
     yaw = np.random.uniform(yaw_min, yaw_max, size=batch_size)
@@ -531,14 +533,14 @@ def process_batch_parallel(config, asset_dir, robot, robot_collision, modified_u
     return results
 
 
-def warmup_jit_functions(config, asset_dir, robot, robot_collision, modified_urdf, weights, solve_fn, collision_pairs, safety_margin):
+def warmup_jit_functions(config, asset_dir, robot, robot_collision, modified_urdf, weights, solve_fn, collision_pairs, safety_margin, z_height=None):
     """Warm up JIT functions with a small batch to avoid compilation overhead during actual processing"""
     print("Warming up JIT functions...")
     start_time = time.time()
     
     # Create a small sample for warmup
     warmup_batch_size = 2
-    warmup_samples = sample_welding_object_pose_batch(config, warmup_batch_size)
+    warmup_samples = sample_welding_object_pose_batch(config, warmup_batch_size, z_height)
     sampled_x, sampled_y, sampled_yaw, sampled_z = warmup_samples[:,0], warmup_samples[:,1], warmup_samples[:,2], warmup_samples[:,3]
     
     # Warmup welding path computation
@@ -655,9 +657,11 @@ def save_results(results, filename="batch_eetrack_results.json"):
 
 def main():
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Batch EETrack optimization with configurable sit target height')
+    parser = argparse.ArgumentParser(description='Batch EETrack optimization with configurable sit target height and z height')
     parser.add_argument('--sit_target_height', type=float, default=0.37, 
                        help='Target height for sitting position in meters (default: 0.37)')
+    parser.add_argument('--z_height', type=float, default=None,
+                       help='Z height for welding object sampling (default: use config value)')
     args = parser.parse_args()
     
     config, asset_dir = load_config()
@@ -679,17 +683,25 @@ def main():
     # SOLVE function definition with collision
     solve_fn = make_solve_eetrack_optimization_jitted(robot, robot_collision, weights, max_iterations, collision_pairs, safety_margin)
     
-    # Create filename with sit_target_height and save to batch_results directory
+    # Create filename with sit_target_height and z_height and save to batch_results directory
     height_cm = int(args.sit_target_height * 100)  # Convert to cm
+    
+    # Determine z_height for filename (use config value if not provided)
+    z_height_for_filename = args.z_height
+    if z_height_for_filename is None:
+        z_height_for_filename = config['search_space'].get('z_height', 0.0)
+    z_height_mm = int(z_height_for_filename * 1000)  # Convert to mm
+    
     results_dir = Path("files/batch_results")
     results_dir.mkdir(parents=True, exist_ok=True)
-    results_filename = results_dir / f"batch_eetrack_results_{height_cm}.json"
+    results_filename = results_dir / f"batch_eetrack_results_h{height_cm}_z{z_height_mm}.json"
     
     print(f"Using sit_target_height: {args.sit_target_height}m ({height_cm}cm)")
+    print(f"Using z_height: {z_height_for_filename}m ({z_height_mm}mm)")
     print(f"Results will be saved to: {results_filename}")
     
     # Warm up JIT functions
-    analyze_fn_jit = warmup_jit_functions(config, asset_dir, robot, robot_collision, modified_urdf, weights, solve_fn, collision_pairs, safety_margin)
+    analyze_fn_jit = warmup_jit_functions(config, asset_dir, robot, robot_collision, modified_urdf, weights, solve_fn, collision_pairs, safety_margin, args.z_height)
 
     num_batches = int(np.ceil(n_samples / batch_size))
     all_results = []
@@ -697,7 +709,7 @@ def main():
         current_batch_size = batch_size if (batch_idx < num_batches - 1) else (n_samples - batch_idx * batch_size)
 
         # FUNCTION CALL! (sample_welding_object_pose_batch: (B, 4))
-        samples = sample_welding_object_pose_batch(config, current_batch_size)
+        samples = sample_welding_object_pose_batch(config, current_batch_size, args.z_height)
         samples, valid_n = pad_samples(samples, batch_size)
 
         # FUNCTION CALL! (process_batch_parallel_optimized: (B, 4)) :: Most Time-Consuming Function

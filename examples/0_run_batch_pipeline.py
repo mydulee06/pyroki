@@ -5,6 +5,7 @@ Runs the complete pipeline: batch_eetrack -> inverse_transform -> json_to_pt_con
 
 Usage:
 python run_batch_pipeline.py --sit_target_height 0.37
+python run_batch_pipeline.py --sit_target_height 0.35 --z_height 0.1
 python run_batch_pipeline.py --sit_target_height 0.35 --skip_batch_eetrack
 """
 
@@ -76,6 +77,8 @@ def main():
     parser = argparse.ArgumentParser(description='Run complete batch processing pipeline')
     parser.add_argument('--sit_target_height', type=float, default=0.37,
                        help='Target height for sitting position in meters (default: 0.37)')
+    parser.add_argument('--z_height', type=float, default=None,
+                       help='Z height for welding object sampling (default: use config value)')
     parser.add_argument('--skip_batch_eetrack', action='store_true',
                        help='Skip batch_eetrack step (use existing results)')
     parser.add_argument('--skip_inverse_transform', action='store_true',
@@ -89,21 +92,35 @@ def main():
     
     args = parser.parse_args()
     
+    # Load config to get z_height if not provided
+    import yaml
+    config_file = Path("eetrack/config.yaml")
+    with open(config_file, 'r') as f:
+        config = yaml.safe_load(f)
+    
     # Setup paths
     height_cm = int(args.sit_target_height * 100)
+    
+    # Determine z_height for filename (use config value if not provided)
+    z_height_for_filename = args.z_height
+    if z_height_for_filename is None:
+        z_height_for_filename = config['search_space'].get('z_height', 0.0)
+    z_height_mm = int(z_height_for_filename * 1000)  # Convert to mm
+    
     results_dir = Path("files/batch_results")
     results_dir.mkdir(parents=True, exist_ok=True)
     
-    batch_results_file = results_dir / f"batch_eetrack_results_{height_cm}.json"
-    inverse_results_file = results_dir / f"batch_eetrack_results_{height_cm}_inverse.json"
-    pt_file = results_dir / f"batch_eetrack_results_{height_cm}_inverse.pt"
+    batch_results_file = results_dir / f"batch_eetrack_results_h{height_cm}_z{z_height_mm}.json"
+    inverse_results_file = results_dir / f"batch_eetrack_results_h{height_cm}_z{z_height_mm}_inverse.json"
+    pt_file = results_dir / f"batch_eetrack_results_h{height_cm}_z{z_height_mm}_inverse.pt"
     
     # Set experiment prefix if not provided
     if args.exp_prefix is None:
-        args.exp_prefix = f"batch_pipeline_h{height_cm}"
+        args.exp_prefix = f"batch_pipeline_h{height_cm}_z{z_height_mm}"
     
     print(f"🎯 Batch Processing Pipeline")
     print(f"Sit target height: {args.sit_target_height}m ({height_cm}cm)")
+    print(f"Z height: {z_height_for_filename}m ({z_height_mm}mm)")
     print(f"Experiment prefix: {args.exp_prefix}")
     print(f"Results directory: {results_dir}")
     
@@ -113,6 +130,8 @@ def main():
             sys.executable, "14_batch_eetrack.py",
             "--sit_target_height", str(args.sit_target_height)
         ]
+        if args.z_height is not None:
+            cmd.extend(["--z_height", str(args.z_height)])
         run_command(cmd, "Running batch EETrack optimization")
     else:
         print(f"\n⏭️  Skipping batch_eetrack step")
