@@ -15,7 +15,4 @@ htmlcov
 .envrc
 .vite
 build
-batch_eetrack_results_plot.html
-batch_eetrack_results.json
-batch_eetrack_results_inverse.json
 files/
