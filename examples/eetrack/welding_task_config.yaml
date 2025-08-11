@@ -107,7 +107,8 @@ success_criteria:
 # File paths
 file_paths:
   # Path to inverse results JSON file (relative to this config file)
-  inverse_results_file: "../batch_eetrack_results_inverse.json"
+  # inverse_results_file: "../batch_eetrack_results_inverse.json"
+  inverse_results_file: "../files/batch_results/batch_eetrack_results_39_inverse.json"
   
   # Output file template (will be formatted with task name)
   output_file_template: "{output_dir}/{task_name}_mid_sole_poses.json"
