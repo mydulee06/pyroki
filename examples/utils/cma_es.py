@@ -442,7 +442,8 @@ def main():
         pprint(f"The most greatest success rate: {robust_xyyaw_sr} ({num_success}/{num_total})")
         save_data = {
             "xyyaws": robust_xyyaws,
-            "dxy": dxy,
+            "dx": dx,
+            "dy": dy,
             "dyaw": dyaw,
             "success_rate": robust_xyyaw_sr,
             "num_success": num_success,

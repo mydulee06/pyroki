@@ -213,6 +213,55 @@ def main():
     else:
         print(f"\n⏭️  Skipping cma_es step")
     
+    # --- Collect summary statistics for dataset ---
+    # (x, y, yaw, dx, dy, dyaw, success_rate) for each (z_height, target_height)
+    # We'll use the batch_results_file (original samples) and inverse_results_file (transformed)
+    import numpy as np
+    import torch
+    cma_result_file = Path("files") / args.exp_prefix / "dummy_exp" / "best_base_pose.pt"
+    try:
+        data = torch.load(cma_result_file, weights_only=False)
+        # data = {k: torch.tensor(v, device=device) if isinstance(v, np.ndarray) else v 
+        #         for k, v in data.items()}
+    except Exception as e:
+        print(f"⚠️  Could not load cmaes results for dataset summary: {e}")
+        data = []
+
+    x_mean = data["xyyaws"][0]
+    y_mean = data["xyyaws"][1]
+    yaw_mean = data["xyyaws"][2]
+    dx = data["dx"]
+    dy = data["dy"]
+    dyaw = data["dyaw"]
+    success_rate_in_range = data["success_rate"]
+    # Success rate already computed above
+    summary_row = {
+        'z_height': float(z_height_for_filename),
+        'target_height': float(args.sit_target_height),
+        'x': x_mean, 'y': y_mean, 'yaw': yaw_mean,
+        'dx': dx, 'dy': dy, 'dyaw': dyaw,
+        'success_rate': success_rate_in_range
+    }
+
+    # --- Save/update dataset file ---
+    dataset_file = Path('files/batch_results/summary_dataset.json')
+    dataset = []
+    if dataset_file.exists():
+        try:
+            with open(dataset_file, 'r') as f:
+                dataset = json.load(f)
+        except Exception as e:
+            print(f"⚠️  Could not load existing dataset: {e}")
+            dataset = []
+    # Remove any existing row with same (z_height, target_height)
+    dataset = [row for row in dataset if not (np.isclose(row['z_height'], summary_row['z_height']) and np.isclose(row['target_height'], summary_row['target_height']))]
+    dataset.append(summary_row)
+    # Sort by z_height, then target_height
+    dataset = sorted(dataset, key=lambda r: (r['z_height'], r['target_height']))
+    with open(dataset_file, 'w') as f:
+        json.dump(dataset, f, indent=2)
+    print(f"\n📝 Updated summary dataset: {dataset_file} (total {len(dataset)} rows)")
+
     # Final summary
     print(f"\n🎉 Pipeline completed successfully!")
     print(f"📁 Results directory: {results_dir}")
@@ -221,6 +270,7 @@ def main():
     print(f"   - Inverse results: {inverse_results_file}")
     print(f"   - PT file: {pt_file}")
     print(f"   - CMA-ES results: files/{args.exp_prefix}/")
+    print(f"   - Summary dataset: {dataset_file}")
     
     return 0
 
