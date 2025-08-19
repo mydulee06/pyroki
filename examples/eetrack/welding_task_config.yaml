@@ -48,13 +48,13 @@ tasks:
     difficulty: "medium"
 
 search_space:
-  z_height: -0.37       # Need to be modified for each task
+  z_height: -0.40       # Need to be modified for each task
   # x_range: [-0.5, -0.2]      # [min, max]
   # y_range: [0.2346, 0.4586]    # [min, max]
   # angle_range: [-0.165, 0.435] # [min, max] (rad)
-  x_range: [-0.45, -0.25]      # [min, max]
-  y_range: [0.2355, 0.4575]    # [min, max]
-  angle_range: [-0.16, 0.42] # [min, max] (rad)
+  x_range: [-0.3610123224183279, -0.3610123224183279]      # [min, max]
+  y_range: [0.30726465225740035, 0.30726465225740035]    # [min, max]
+  angle_range: [-0.20107592509521961, -0.20107592509521961] # [min, max] (rad)
 
 
 # Batch processing configuration
@@ -108,7 +108,7 @@ success_criteria:
 file_paths:
   # Path to inverse results JSON file (relative to this config file)
   # inverse_results_file: "../batch_eetrack_results_inverse.json"
-  inverse_results_file: "../files/batch_results/batch_eetrack_results_39_inverse.json"
+  inverse_results_file: "../files/batch_results/batch_eetrack_results_h40_z280_inverse.json"
   
   # Output file template (will be formatted with task name)
   output_file_template: "{output_dir}/{task_name}_mid_sole_poses.json"

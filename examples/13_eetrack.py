@@ -34,7 +34,7 @@ def get_mid_sole_link_pose(left_sole_link_pose, right_sole_link_pose):
 
 def load_config():
     asset_dir = Path(__file__).parent / "eetrack"
-    config_file = asset_dir / "config.yaml"
+    config_file = asset_dir / "config_solo.yaml"
     with open(config_file, 'r') as f:
         config = yaml.safe_load(f)
     return config, asset_dir

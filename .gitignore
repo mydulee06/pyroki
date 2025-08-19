@@ -15,4 +15,4 @@ htmlcov
 .envrc
 .vite
 build
-files/
+files_temp/

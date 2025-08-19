@@ -26,12 +26,12 @@ welding_object:
 # Batch search space settings
 search_space:
   z_height: 0.3
-  x_range: [-0.4, 0.8]      # [min, max]
-  y_range: [-0.9, 0.4]    # [min, max]
-  angle_range: [-0.5, 1.0] # [min, max] (rad)
-  # x_range: [0.35, 0.35]      # [min, max]
-  # y_range: [-0.25, -0.25]    # [min, max]
-  # angle_range: [0.0, 0.0] # [min, max] (rad)
+  # x_range: [-0.4, 0.8]      # [min, max]
+  # y_range: [-0.9, 0.4]    # [min, max]
+  # angle_range: [-0.5, 1.0] # [min, max] (rad)
+  x_range: [0.35, 0.35]      # [min, max]
+  y_range: [-0.25, -0.25]    # [min, max]
+  angle_range: [0.0, 0.0] # [min, max] (rad)
   n_samples: 50000
   batch_size: 100
 

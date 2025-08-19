@@ -17,7 +17,7 @@ def main():
     parser.add_argument('--skip_cma_es', action='store_true', help='CMA-ES 단계 건너뛰기')
     args = parser.parse_args()
 
-    sit_target_heights = np.arange(0.42, 0.58 + 1e-6, 0.02)
+    sit_target_heights = np.arange(0.30, 0.58 + 1e-6, 0.02)
     for sit_target_height in sit_target_heights:
         cmd = [
             sys.executable, '0_run_batch_pipeline.py',
