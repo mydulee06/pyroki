@@ -19,11 +19,14 @@ The core feature of this repository is finding the optimal base (pelvis) positio
 You can run the entire pipeline with the command below. The robot's sitting height (`sit_target_height`) is a crucial parameter and can be adjusted as needed.
 
 ```bash
-# Run the full pipeline (with a sitting height of 0.37m)
-python examples/0_run_batch_pipeline.py --sit_target_height 0.37
+# Run the full pipeline (with a z height of welding object in 0.30m and sitting height in (0.30m ~ 0.58m))
+python examples/run_batch_pipeline.py --z_height 0.30
+
+# Run the full pipeline (with a sitting height of 0.37m and z height of weldding object in 0.30m)
+python examples/0_run_batch_pipeline.py --sit_target_height 0.37 --z_height 0.30
 
 # If you have already generated candidates (.json), skip the first step and run
-python examples/0_run_batch_pipeline.py --sit_target_height 0.37 --skip_batch_eetrack
+python examples/0_run_batch_pipeline.py --sit_target_height 0.37 --z_height 0.30 --skip_batch_eetrack
 ```
 
 ### Running Pipeline Steps Individually
