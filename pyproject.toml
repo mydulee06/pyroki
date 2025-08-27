@@ -32,6 +32,8 @@ dependencies = [
     "viser",
     "pyliblzfse",  # Need for viser.extras import in viser==0.2.23 
     "pyyaml",
+    "warp-lang @ https://github.com/NVIDIA/warp/releases/download/v1.8.1/warp_lang-1.8.1+cu12-py3-none-manylinux_2_28_x86_64.whl",
+    "torch",
 ]
 
 [project.optional-dependencies]

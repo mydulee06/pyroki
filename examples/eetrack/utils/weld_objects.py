@@ -73,14 +73,15 @@ class WeldObject:
         quat_lerp_end = jnp.repeat(jnp.concat([eetrack_quats[1:], eetrack_quats[:1]]), num_segments, axis=0)
         eetrack_quats_b = slerp(quat_lerp_start, quat_lerp_end, lerp_weight)
 
-        normal_lerp_start = jnp.repeat(self.edge_normals, num_segments, axis=0)
-        normal_lerp_end = jnp.repeat(jnp.concat([self.edge_normals[1:], self.edge_normals[:1]]), num_segments, axis=0)
-        normal_lerp = lerp(normal_lerp_start, normal_lerp_end, lerp_weight[:,None])
-        normal_lerp_deg = jnp.arctan2(normal_lerp[:,1], normal_lerp[:,0])/jnp.pi*180
+        normal_yaw = jnp.arctan2(self.edge_normals[:,1], self.edge_normals[:,0])
+        normal_yaw_lerp_start = jnp.repeat(normal_yaw, num_segments, axis=0)
+        normal_yaw_lerp_end = jnp.repeat(jnp.concat([normal_yaw[1:], normal_yaw[:1]]), num_segments, axis=0)
+        normal_yaw_lerp = lerp(normal_yaw_lerp_start, normal_yaw_lerp_end, lerp_weight)
+        normal_yaw_lerp_deg = jnp.degrees(normal_yaw_lerp)
         if segment_normal_deg_range[1] > 180.0:
-            in_segment_degs = ((segment_normal_deg_range[0] < normal_lerp_deg) & (normal_lerp_deg < 180.0)) | ((-180.0 < normal_lerp_deg) & (normal_lerp_deg < segment_normal_deg_range[1] - 360.0))
+            in_segment_degs = ((segment_normal_deg_range[0] < normal_yaw_lerp_deg) & (normal_yaw_lerp_deg < 180.0+1e-3)) | ((-180.0-1e-3 < normal_yaw_lerp_deg) & (normal_yaw_lerp_deg < segment_normal_deg_range[1] - 360.0))
         else:
-            in_segment_degs = (segment_normal_deg_range[0] < normal_lerp_deg) & (normal_lerp_deg < segment_normal_deg_range[1])
+            in_segment_degs = (segment_normal_deg_range[0] < normal_yaw_lerp_deg) & (normal_yaw_lerp_deg < segment_normal_deg_range[1])
         in_segment_degs_ids = in_segment_degs.nonzero()[0]
         if in_segment_degs.shape[0] -1 in in_segment_degs_ids:
             discon_idx = jnp.diff(in_segment_degs_ids).argmax() + 1
@@ -90,6 +91,12 @@ class WeldObject:
         self.eetrack_quats_b = eetrack_quats_b[in_segment_degs_ids]
         self.eetrack_poses_b = jaxlie.SE3(jnp.concat([self.eetrack_quats_b, self.eetrack_poss_b], axis=1))
         self.number_of_subgoals = self.eetrack_poses_b.parameters().shape[0]
+
+        # For debugging,
+        # normal_vec = np.column_stack([self.eetrack_poss_b, self.eetrack_poss_b + 0.01*jaxlie.SO3(self.eetrack_quats_b).as_matrix()[:,:,0]])
+        # normal_lerp = jnp.stack([jnp.cos(normal_yaw_lerp), jnp.sin(normal_yaw_lerp), jnp.zeros_like(normal_yaw_lerp)], axis=1)
+        # normal_vec = np.column_stack([eetrack_poss_b, eetrack_poss_b + 0.01*normal_lerp])
+        # trimesh.Scene([self.mesh, trimesh.PointCloud(eetrack_poss_b), trimesh.load_path(normal_vec.reshape((-1,2,3)))]).show()
 
     def get_welding_path(self, object_poses: jaxlie.SE3) -> jaxlie.SE3:
         num_object_poses = object_poses.parameters().shape[0]

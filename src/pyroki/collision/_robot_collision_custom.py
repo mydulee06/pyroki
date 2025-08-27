@@ -1,12 +1,14 @@
 from ._robot_collision import RobotCollision as BaseRobotCollision
 import jax
 import jax.numpy as jnp
+import jax_dataclasses as jdc
 from typing import Tuple
 import yourdfpy
 from ._geometry import Capsule
 from typing import cast
 
-class RobotCollision(BaseRobotCollision):
+@jdc.pytree_dataclass
+class RobotCollisionV2(BaseRobotCollision):
     @staticmethod
     def from_urdf(
         urdf: yourdfpy.URDF,
@@ -41,14 +43,14 @@ class RobotCollision(BaseRobotCollision):
             )
         capsules = cast(Capsule, jax.tree.map(lambda *args: jnp.stack(args), *cap_list))
         assert capsules.get_batch_axes() == (len(link_name_list),)
-        active_idx_i, active_idx_j = RobotCollision._compute_active_pair_indices(
+        active_idx_i, active_idx_j = RobotCollisionV2._compute_active_pair_indices(
             link_names=link_name_list,
             urdf=urdf,
             user_ignore_pairs=user_ignore_pairs,
             ignore_immediate_adjacents=ignore_immediate_adjacents,
             exclude_links=exclude_links,
         )
-        return RobotCollision(
+        return RobotCollisionV2(
             num_links=len(link_name_list),
             link_names=link_name_list,
             active_idx_i=active_idx_i,

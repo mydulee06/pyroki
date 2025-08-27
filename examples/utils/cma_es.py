@@ -246,7 +246,7 @@ def main():
 
     for exp_path in exp_paths:
         save_path = exp_path / "best_base_pose.pt"
-        if save_path.exists() and not "seed_42_weld_object_type_Rect_Plate_125_weld_object_z_0.29_0.29_x_-0.70_-0.10_y_-0.15_0.45_yaw_0.20_1.20_h_0.37_0.37_segment_degs_-1.00_1.00_appr_deg_45.0" in exp_path.as_posix():
+        if save_path.exists():
             continue
         data_path = exp_path / "batch_eetrack_results_inverse.pt"
 

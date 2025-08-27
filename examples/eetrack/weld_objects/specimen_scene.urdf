@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="utf-8"?>
+<robot name="g1_29dof_rev_1_0">
+  <link name="base"/>
+  <joint name="mid_base" type="fixed">
+    <origin xyz="0 0 0.02" rpy="0 0 0"/>
+    <parent link="base"/>
+    <child link="mid_base"/>
+  </joint>
+  <link name="mid_base">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.04, 0.4, 0.04"/>
+      </geometry>
+      <material name="dark">
+        <color rgba="0.4 0.4 0.4 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.04, 0.4, 0.04"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="base_mid_left" type="fixed">
+    <origin xyz="0 0.22 0" rpy="0 0 0"/>
+    <parent link="mid_base"/>
+    <child link="left_base"/>
+  </joint>
+  <link name="left_base">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.43, 0.04, 0.04"/>
+      </geometry>
+      <material name="dark">
+        <color rgba="0.4 0.4 0.4 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.43, 0.04, 0.04"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="left_base_column" type="fixed">
+    <origin xyz="0 0 0.52" rpy="0 0 0"/>
+    <parent link="left_base"/>
+    <child link="left_column"/>
+  </joint>
+  <link name="left_column">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.04, 0.04, 1.0"/>
+      </geometry>
+      <material name="dark">
+        <color rgba="0.4 0.4 0.4 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.04, 0.04, 1.0"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="base_mid_right" type="fixed">
+    <origin xyz="0 -0.22 0" rpy="0 0 0"/>
+    <parent link="mid_base"/>
+    <child link="right_base"/>
+  </joint>
+  <link name="right_base">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.43, 0.04, 0.04"/>
+      </geometry>
+      <material name="dark">
+        <color rgba="0.4 0.4 0.4 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.43, 0.04, 0.04"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="right_base_column" type="fixed">
+    <origin xyz="0 0 0.52" rpy="0 0 0"/>
+    <parent link="right_base"/>
+    <child link="right_column"/>
+  </joint>
+  <link name="right_column">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.04, 0.04, 1.0"/>
+      </geometry>
+      <material name="dark">
+        <color rgba="0.4 0.4 0.4 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.04, 0.04, 1.0"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="base_rack" type="fixed">
+    <origin xyz="-0.04 0 0.2975" rpy="0 0 0"/>
+    <parent link="base"/>
+    <child link="rack"/>
+  </joint>
+  <link name="rack">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.12, 0.4, 0.005"/>
+      </geometry>
+      <material name="dark">
+        <color rgba="0.78 0.56 0.22 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.12, 0.4, 0.005"/>
+      </geometry>
+    </collision>
+  </link>
+</robot>

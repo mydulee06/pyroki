@@ -24,7 +24,8 @@ import yaml
 import yourdfpy
 from eetrack.utils.weld_objects import WeldObject
 from jaxls import TerminationConfig, TrustRegionConfig
-from pyroki.collision._robot_collision_custom import RobotCollision
+from pyroki.collision._robot_collision_custom import RobotCollisionV2
+from tqdm import tqdm
 
 
 def setup_logging(quiet=False, verbose=False):
@@ -127,7 +128,7 @@ def load_robot(config, sit_target_height):
     collision_cfg = config.get('collision', {})
     ignore_pairs = tuple(tuple(pair) for pair in collision_cfg.get('ignore_pairs', []))
     exclude_links = tuple(collision_cfg.get('exclude_links', []))
-    robot_collision = RobotCollision.from_urdf(
+    robot_collision = RobotCollisionV2.from_urdf(
         modified_urdf,
         user_ignore_pairs=ignore_pairs,
         ignore_immediate_adjacents=collision_cfg.get('ignore_adjacent_links', True),
@@ -784,7 +785,7 @@ def main():
 
     num_batches = int(np.ceil(n_samples / batch_size))
     all_results = []
-    for batch_idx in range(num_batches):
+    for batch_idx in tqdm(range(num_batches)):
         current_batch_size = batch_size if (batch_idx < num_batches - 1) else (n_samples - batch_idx * batch_size)
 
         # FUNCTION CALL! (sample_welding_object_pose_batch: (B, 4))

@@ -14,14 +14,19 @@ welding_object:
   object_dir: "eetrack/weld_objects"
   # yaw: 0.0 # pi/2
   pose: [1.0, 0.0, 0.0, 0.0, 0.35, -0.25, 0.3] # wxyz_xyz
-  object_name: "Circular_Body_Plate_110_80"
+  # object_name: "Circular_Body_Plate_110_80"
+  object_name: "specimen"
   segment_normal_deg_range: [179.0, 181.0]
   # pose: [0.0, 0.0, 0.0, 1.0, 0.35, -0.25, 0.3] # wxyz_xyz
   # object_name: "Circular_Plate_50"
   # segment_normal_deg_range: [-30.0, 30.0]
   segment_length_per_timestep: 0.0002  # 0.1 m/s * 0.02 s (vel * dt)
-  offset_length: 0.02
+  offset_length: 0.01
   approach_deg: 45.0
+
+obstacle:
+  mesh_path: null
+  urdf_path: "eetrack/weld_objects/specimen_scene.urdf"
 
 # Batch search space settings
 search_space:
@@ -46,8 +51,8 @@ robot:
     - "right_wrist_pitch_joint"
     - "right_wrist_roll_joint"
     - "right_wrist_yaw_joint"
-  sit_terminal_states_path: eetrack/sit_terminal_states.npz
-  sit_target_height: 0.40
+  sit_terminal_states_path: eetrack/sit_trajectories.npz
+  sit_target_height: 0.42
 
 # Optimization weights
 weights:

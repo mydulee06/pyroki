@@ -14,13 +14,14 @@ welding_object:
   object_dir: "eetrack/weld_objects"
   # yaw: 0.0 # pi/2
   pose: [1.0, 0.0, 0.0, 0.0, 0.35, -0.25, 0.3] # wxyz_xyz
-  object_name: "Circular_Body_Plate_110_80"
+  # object_name: "Circular_Body_Plate_110_80"
+  object_name: "specimen"
   segment_normal_deg_range: [179.0, 181.0]
   # pose: [0.0, 0.0, 0.0, 1.0, 0.35, -0.25, 0.3] # wxyz_xyz
   # object_name: "Circular_Plate_50"
   # segment_normal_deg_range: [-30.0, 30.0]
   segment_length_per_timestep: 0.0002  # 0.1 m/s * 0.02 s (vel * dt)
-  offset_length: 0.02
+  offset_length: 0.01
   approach_deg: 45.0
 
 # Batch search space settings

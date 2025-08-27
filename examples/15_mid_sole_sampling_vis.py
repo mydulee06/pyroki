@@ -23,7 +23,7 @@ sys.path.append(str(Path(__file__).parent))
 from eetrack.utils.weld_objects import WeldObject
 import pyroki as pk
 import yourdfpy
-from pyroki.collision._robot_collision_custom import RobotCollision
+from pyroki.collision._robot_collision_custom import RobotCollisionV2
 import viser
 from viser.extras import ViserUrdf
 import trimesh
@@ -96,7 +96,7 @@ def load_robot(config):
     collision_cfg = config.get('collision', {})
     ignore_pairs = tuple(tuple(pair) for pair in collision_cfg.get('ignore_pairs', []))
     exclude_links = tuple(collision_cfg.get('exclude_links', []))
-    robot_collision = RobotCollision.from_urdf(
+    robot_collision = RobotCollisionV2.from_urdf(
         modified_urdf,
         user_ignore_pairs=ignore_pairs,
         ignore_immediate_adjacents=collision_cfg.get('ignore_adjacent_links', True),
