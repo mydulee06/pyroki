@@ -1,0 +1,10 @@
+# Goal Definition
+nav_msgs/Path ee_traj
+---
+# Result Definition
+trajectory_msgs/JointTrajectory joint_traj
+bool success
+string error_message
+---
+# Feedback Definition
+float32 percent_complete

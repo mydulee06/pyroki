@@ -19,7 +19,7 @@ classifiers = [
 ]
 dependencies = [
     "tyro",
-    "jax>=0.4.0",
+    "jax[cuda12]>=0.4.0",
     "jaxlib",
     "jaxlie>=1.0.0",
     "jax_dataclasses>=1.0.0",
