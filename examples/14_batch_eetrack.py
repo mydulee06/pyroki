@@ -314,19 +314,25 @@ def analyze_trajectory_optimized(robot, joints, target_poses, config, collision_
             collision_cost = jnp.sum(costs)
         else:
             collision_cost = 0.0
+
+        within_joint_limits = (
+            (robot.joints.lower_limits < robot_cfg) &
+            (robot_cfg < robot.joints.upper_limits)
+        ).all()
             
-        return position_error, orientation_error, collision_cost
+        return position_error, orientation_error, collision_cost, within_joint_limits
     
     # Vectorize over all timesteps
     analyze_timestep_vmap = jax.vmap(analyze_single_timestep, in_axes=(0, 0))
-    position_errors, orientation_errors, collision_costs = analyze_timestep_vmap(joints, target_poses)
+    position_errors, orientation_errors, collision_costs, within_joint_limits = analyze_timestep_vmap(joints, target_poses)
     
     # Get maximum values
     max_position_error = jnp.max(position_errors)
     max_orientation_error = jnp.max(orientation_errors)
     max_collision_cost = jnp.max(collision_costs)
+    all_within_joint_limits = within_joint_limits.all()
     
-    return max_position_error, max_orientation_error, max_collision_cost
+    return max_position_error, max_orientation_error, max_collision_cost, all_within_joint_limits
 
 
 def analyze_trajectory(robot, joints, target_poses, config, collision_pairs=None, robot_collision=None, safety_margin=None, collision_weight=None):
@@ -555,7 +561,7 @@ def process_batch_parallel(config, asset_dir, robot, robot_collision, modified_u
     
     # Vectorize over batch dimension
     analyze_fn_vmap = jax.vmap(analyze_fn_jit, in_axes=(0, 0))
-    max_position_errors, max_orientation_errors, max_collision_costs = analyze_fn_vmap(joints_batch, welding_paths_jax)
+    max_position_errors, max_orientation_errors, max_collision_costs, all_within_joint_limits = analyze_fn_vmap(joints_batch, welding_paths_jax)
     end_time = time.time()
     batch_error_analysis_time = end_time - start_time
     
@@ -569,12 +575,14 @@ def process_batch_parallel(config, asset_dir, robot, robot_collision, modified_u
     max_position_errors_np = np.array(max_position_errors)
     max_orientation_errors_np = np.array(max_orientation_errors)
     max_collision_costs_np = np.array(max_collision_costs)
+    all_within_joint_limits_np = np.array(all_within_joint_limits)
     
     # Vectorized failure detection
     position_failed = max_position_errors_np > pos_tol
     orientation_failed = max_orientation_errors_np > ori_tol
     collision_failed = max_collision_costs_np > collision_threshold
-    success = ~(position_failed | orientation_failed | collision_failed)
+    joint_limit_failed = ~all_within_joint_limits_np
+    success = ~(position_failed | orientation_failed | collision_failed | joint_limit_failed)
     
     # Efficient batch result creation
     results = []
@@ -586,6 +594,7 @@ def process_batch_parallel(config, asset_dir, robot, robot_collision, modified_u
             'position_failed': bool(position_failed[i]),
             'orientation_failed': bool(orientation_failed[i]),
             'collision_failed': bool(collision_failed[i]),
+            'joint_limit_failed': bool(joint_limit_failed[i]),
             'sampled_x': float(sampled_x[i]),
             'sampled_y': float(sampled_y[i]),
             'sampled_yaw': float(sampled_yaw[i]),
@@ -665,7 +674,7 @@ def process_batch_parallel_optimized(config, asset_dir, robot, robot_collision, 
     
     # Vectorize over batch dimension
     analyze_fn_vmap = jax.vmap(analyze_fn_jit, in_axes=(0, 0))
-    max_position_errors, max_orientation_errors, max_collision_costs = analyze_fn_vmap(joints_batch, welding_paths_jax)
+    max_position_errors, max_orientation_errors, max_collision_costs, all_within_joint_limits = analyze_fn_vmap(joints_batch, welding_paths_jax)
     end_time = time.time()
     batch_error_analysis_time = end_time - start_time
     
@@ -679,12 +688,14 @@ def process_batch_parallel_optimized(config, asset_dir, robot, robot_collision, 
     max_position_errors_np = np.array(max_position_errors)
     max_orientation_errors_np = np.array(max_orientation_errors)
     max_collision_costs_np = np.array(max_collision_costs)
+    all_within_joint_limits_np = np.array(all_within_joint_limits)
     
     # Vectorized failure detection
     position_failed = max_position_errors_np > pos_tol
     orientation_failed = max_orientation_errors_np > ori_tol
     collision_failed = max_collision_costs_np > collision_threshold
-    success = ~(position_failed | orientation_failed | collision_failed)
+    joint_limit_failed = ~all_within_joint_limits_np
+    success = ~(position_failed | orientation_failed | collision_failed | joint_limit_failed)
     
     # Efficient batch result creation
     results = []
@@ -696,6 +707,7 @@ def process_batch_parallel_optimized(config, asset_dir, robot, robot_collision, 
             'position_failed': bool(position_failed[i]),
             'orientation_failed': bool(orientation_failed[i]),
             'collision_failed': bool(collision_failed[i]),
+            'joint_limit_failed': bool(joint_limit_failed[i]),
             'sampled_x': float(sampled_x[i]),
             'sampled_y': float(sampled_y[i]),
             'sampled_yaw': float(sampled_yaw[i]),

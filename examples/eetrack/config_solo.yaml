@@ -59,7 +59,7 @@ weights:
   position_tracking: 100.0
   orientation_tracking: 50.0
   smoothness: 20.0
-  joint_limits: 1.0
+  joint_limits: 10000.0
   collision: 1.0
   rest_pose: 0.0
 
@@ -99,7 +99,7 @@ tolerance:
   orientation_error: 0.087  # Orientation error tolerance (radians) - ~5 degrees
 
 optimization:
-  max_iterations: 50
+  max_iterations: 100
 collision_pairs:
   - [right_shoulder_pitch_link, pelvis]
   - [right_shoulder_pitch_link, pelvis_contour_link]
