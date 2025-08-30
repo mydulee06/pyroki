@@ -2,7 +2,7 @@
 # Build
 # docker build -f .docker/Dockerfile -t humble-pyroki:0.0.1 .
 # RUN
-# docker run -it --rm --gpus all --privileged --network host -v .:/root/pyroki/ --name humble_pyroki humble-pyroki:0.0.1 
+# docker run -it --gpus all --privileged --network host -v .:/root/pyroki/ --name humble_pyroki humble-pyroki:0.0.1 
 
 FROM osrf/ros:humble-desktop-full
 
@@ -34,11 +34,18 @@ COPY . /root/pyroki
 
 # Install pyroki
 WORKDIR /root/pyroki
-RUN python3 -m pip install --ignore-installed .
+RUN python3 -m pip install --no-cache-dir --ignore-installed .
 
 # Download sit terminal states and trajectories
 # RUN cd examples/eetrack && \
 #     gdown --id 1u53kk0U8BHesAoaDC6YB4Bgpl_mNkmgN
+
+# Build pyroki ros
+WORKDIR /root/pyroki_ws/src
+RUN source /root/unitree_ros2/setup.sh && \
+    cp -r /root/pyroki/rospkg ./pyroki_ros && \
+    cd .. && \
+    colcon build
 
 RUN echo "source /root/unitree_ros2/setup.sh" >> ${HOME}/.bashrc
 

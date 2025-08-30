@@ -2,7 +2,7 @@
 welding_path:
   start_point: [0.1, -0.55, 0.0]
   end_point: [-0.1, -0.55, 0.0]
-  num_timesteps: 750
+  num_timesteps: 1000
   rotation:
     roll: 0.0
     pitch: 0.785398  # pi/4 in radians
@@ -48,7 +48,7 @@ robot:
     - "right_wrist_roll_joint"
     - "right_wrist_yaw_joint"
   sit_terminal_states_path: eetrack/sit_terminal_states.npz
-  sit_target_height: 0.40
+  sit_target_height: 0.3
 
 # Optimization weights
 weights:
