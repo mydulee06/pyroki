@@ -1,9 +1,14 @@
+import os
 import sys
+import time
 import yaml
 import yourdfpy
 import numpy as np
 from pathlib import Path
-from typing import Tuple, TypedDict
+from typing import TypedDict
+import threading
+
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 import jax
 import jax.numpy as jnp
@@ -12,6 +17,9 @@ import jaxls
 
 import pyroki as pk
 from pyroki.collision._robot_collision_custom import RobotCollisionV2
+
+import viser
+from viser.extras import ViserUrdf
 
 import rclpy
 from rclpy.node import Node
@@ -148,6 +156,7 @@ def make_solve_eetrack_optimization_jitted(robot, robot_collision, weights, max_
             costs.append(smoothness_cost_t(var_joints[t+1], var_joints[t]))
         termination_config = jaxls.TerminationConfig(
             max_iterations=max_iterations,
+            early_termination=False,
         )
         solution = (
             jaxls.LeastSquaresProblem(costs, [var_joints])
@@ -202,14 +211,19 @@ def analyze_trajectory_optimized(robot, joints, target_poses, config, collision_
             collision_cost = jnp.sum(costs)
         else:
             collision_cost = 0.0
+
+        within_joint_limits = (
+            (robot.joints.lower_limits < robot_cfg) &
+            (robot_cfg < robot.joints.upper_limits)
+        ).all()
             
-        return position_error, orientation_error, collision_cost
-    
+        return position_error, orientation_error, collision_cost, within_joint_limits
+
     # Vectorize over all timesteps
     analyze_timestep_vmap = jax.vmap(analyze_single_timestep, in_axes=(0, 0))
-    position_errors, orientation_errors, collision_costs = analyze_timestep_vmap(joints, target_poses)
+    position_errors, orientation_errors, collision_costs, within_joint_limits = analyze_timestep_vmap(joints, target_poses)
     
-    return position_errors, orientation_errors, collision_costs
+    return position_errors, orientation_errors, collision_costs, within_joint_limits
 
 
 def pose_stamped_msg_list_to_jax(pose_stamped_msg_list):
@@ -229,13 +243,14 @@ def pose_stamped_msg_list_to_jax(pose_stamped_msg_list):
     poses_jax = jnp.stack(poses_jax)
     return poses_jax
 
-def append_dummy_ee_traj(ee_traj, num_step):
-    if len(ee_traj) > num_step:
-        return ee_traj
+def append_dummy_target_ee_traj(target_ee_traj, num_step):
+    if len(target_ee_traj) > num_step:
+        return target_ee_traj
 
-    dummy_ee_traj = jnp.zeros((num_step - len(ee_traj), 7)).at[:,-1].set(1)
+    # dummy_ee_traj = jnp.zeros((num_step - len(target_ee_traj), 7)).at[:,-1].set(1)
+    dummy_ee_traj = target_ee_traj[-1:].repeat(num_step - len(target_ee_traj), 0)
 
-    return jnp.concat([ee_traj, dummy_ee_traj])
+    return jnp.concat([target_ee_traj, dummy_ee_traj])
 
 
 class TrajOptActionServer(Node):
@@ -247,6 +262,9 @@ class TrajOptActionServer(Node):
         self._load_robot()
         self._compile_trajopt_fn()
 
+        self._init_visualizer()
+        threading.Thread(target=self._vis_trajectory_callback, daemon=True).start()
+
         self._action_server = ActionServer(
             self,
             TrajOpt,
@@ -257,7 +275,7 @@ class TrajOptActionServer(Node):
 
     def _load_config(self):
         self.asset_dir = Path(__file__).parent / "eetrack"
-        config_file = self.asset_dir / "config.yaml"
+        config_file = self.asset_dir / "config_ros.yaml"
         with open(config_file, 'r') as f:
             self.config = yaml.safe_load(f)
 
@@ -274,17 +292,17 @@ class TrajOptActionServer(Node):
             if joint.name in urdf_obj.actuated_joint_names and joint.name not in self.config['robot']['movable_joints']:
                 joint.type = "fixed"
                 joint.origin = urdf_obj.get_transform(joint.child, joint.parent)
-        modified_urdf = yourdfpy.URDF(urdf_obj.robot, mesh_dir=Path(urdf_path).parent)
+        self.modified_urdf = yourdfpy.URDF(urdf_obj.robot, mesh_dir=Path(urdf_path).parent)
 
         # Robot
-        self.robot = pk.Robot.from_urdf(modified_urdf)
+        self.robot = pk.Robot.from_urdf(self.modified_urdf)
 
         # Robot collision
         collision_cfg = self.config.get('collision', {})
         ignore_pairs = tuple(tuple(pair) for pair in collision_cfg.get('ignore_pairs', []))
         exclude_links = tuple(collision_cfg.get('exclude_links', []))
         self.robot_collision = RobotCollisionV2.from_urdf(
-            modified_urdf,
+            self.modified_urdf,
             user_ignore_pairs=ignore_pairs,
             ignore_immediate_adjacents=collision_cfg.get('ignore_adjacent_links', True),
             exclude_links=exclude_links
@@ -334,28 +352,30 @@ class TrajOptActionServer(Node):
         self.validation_fn(dumm_joint_traj, dummy_ee_traj)
 
 
-    def _check_success(self, joint_traj, ee_traj, max_step):
-        position_errors, orientation_errors, collision_costs = \
-            self.validation_fn(joint_traj, ee_traj)
+    def _check_success(self, joint_traj, target_ee_traj, max_step):
+        position_errors, orientation_errors, collision_costs, within_joint_limits = \
+            self.validation_fn(joint_traj, target_ee_traj)
 
         pos_tol = self.config['tolerance']['position_error']
         ori_tol = self.config['tolerance']['orientation_error']
         collision_threshold = 0.001
 
-        # Convert to numpy for easier processing
         max_position_error = position_errors[:max_step].max().item()
         max_orientation_error = orientation_errors[:max_step].max().item()
         max_collision_cost = collision_costs[:max_step].max().item()
+        all_within_joint_limits = within_joint_limits.all().item()
 
         self.get_logger().info(f"Max position error: {max_position_error:.4f}")
         self.get_logger().info(f"Max orientation error: {max_orientation_error:.4f}")
         self.get_logger().info(f"Max collision cost: {max_collision_cost:.4f}")
+        self.get_logger().info(f"All within joint limit: {all_within_joint_limits}")
         
         # Vectorized failure detection
         position_failed = max_position_error > pos_tol
         orientation_failed = max_orientation_error > ori_tol
         collision_failed = max_collision_cost > collision_threshold
-        success = not (position_failed and orientation_failed and collision_failed)
+        joint_limit_failed = not all_within_joint_limits
+        success = not (position_failed or orientation_failed or collision_failed or joint_limit_failed)
 
         return success
 
@@ -363,25 +383,25 @@ class TrajOptActionServer(Node):
     def execute_trajopt(self, goal_handle):
         self.get_logger().info('Executing goal...')
 
-        ee_traj = goal_handle.request.ee_traj
+        target_ee_traj = goal_handle.request.ee_traj
 
-        ee_traj_jax = pose_stamped_msg_list_to_jax(ee_traj.poses)
+        target_ee_traj_jax = pose_stamped_msg_list_to_jax(target_ee_traj.poses)
 
         valid_max_step = self.max_traj_len
-        if len(ee_traj_jax) < self.max_traj_len:
+        if len(target_ee_traj_jax) < self.max_traj_len:
             # Append dummy ee traj for avoiding re-jit.
-            valid_max_step = len(ee_traj_jax)
-            ee_traj_jax = append_dummy_ee_traj(ee_traj_jax, self.max_traj_len)
-        if len(ee_traj_jax) > self.max_traj_len:
+            valid_max_step = len(target_ee_traj_jax)
+            target_ee_traj_jax = append_dummy_target_ee_traj(target_ee_traj_jax, self.max_traj_len)
+        if len(target_ee_traj_jax) > self.max_traj_len:
             self.get_logger().warning(f'Recieved EE trajectory is larger than maximum length {self.max_traj_len}. Truncate EE traj to {self.max_traj_len}.')
-            ee_traj_jax = ee_traj_jax[:self.max_traj_len]
+            target_ee_traj_jax = target_ee_traj_jax[:self.max_traj_len]
 
-        joint_traj_jax = self.solve_fn(ee_traj_jax)
+        joint_traj_jax = self.solve_fn(target_ee_traj_jax)
 
-        success = self._check_success(joint_traj_jax, ee_traj_jax, valid_max_step)
+        success = self._check_success(joint_traj_jax, target_ee_traj_jax, valid_max_step)
 
         stamp = self.get_clock().now().to_msg()
-        frame_id = ee_traj.header.frame_id
+        frame_id = target_ee_traj.header.frame_id
 
         result = TrajOpt.Result()
         if success:
@@ -405,7 +425,56 @@ class TrajOptActionServer(Node):
             goal_handle.abort()
             self.get_logger().info(f'Fail to find successful joint trajectories!!')
 
+        self._set_vis_trajectory(target_ee_traj_jax, joint_traj_jax)
+
         return result
+
+
+    def _init_visualizer(self):
+        self.server = viser.ViserServer()
+
+        # GUI
+        self.playing = self.server.gui.add_checkbox("playing", True)
+        self.timestep_slider = self.server.gui.add_slider("timestep", 0, self.max_traj_len - 1, 1, 0)
+
+        # Scene
+        self.server.scene.add_frame("/base", show_axes=False)
+        self.urdf_vis = ViserUrdf(self.server, self.modified_urdf, root_node_name="/base")
+
+        self.target_pose_vis = self.server.scene.add_frame(
+            "/target_pose",
+            axes_length=0.1,
+            axes_radius=0.002,
+        )
+
+        self.vis = False
+
+
+    def _set_vis_trajectory(self, target_ee_traj, joint_traj):
+        self.vis = True
+
+        self.target_ee_traj_vis = target_ee_traj
+        self.joint_traj_vis = joint_traj
+
+
+    def _vis_trajectory_callback(self):
+        while True:
+            time.sleep(0.02)
+
+            if not self.vis:
+                continue
+
+            with self.server.atomic():
+                if self.playing.value:
+                    self.timestep_slider.value = (self.timestep_slider.value + 1) % self.max_traj_len
+                tstep = self.timestep_slider.value
+
+                robot_cfg = self.joint_traj_vis[tstep]
+                self.urdf_vis.update_cfg(np.array(robot_cfg))
+
+                target_ee = self.target_ee_traj_vis[tstep]
+                self.target_pose_vis.position = np.array(target_ee[:3])
+                self.target_pose_vis.wxyz = np.roll(np.array(target_ee[3:]), 1)
 
 
 def main(args=None):
