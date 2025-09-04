@@ -16,8 +16,10 @@ find_package(trajectory_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "action/TrajOpt.action"
+  "action/TrajOptSingleEE.action"
   DEPENDENCIES nav_msgs
   DEPENDENCIES trajectory_msgs
+  DEPENDENCIES geometry_msgs
 )
 
 if(BUILD_TESTING)

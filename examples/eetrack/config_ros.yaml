@@ -24,6 +24,10 @@ welding_object:
   offset_length: 0.01
   approach_deg: 45.0
 
+obstacle:
+  mesh_path: null
+  urdf_path: "eetrack/weld_objects/specimen_scene2.urdf"
+
 # Batch search space settings
 search_space:
   z_height: 0.3
@@ -246,3 +250,36 @@ collision_pairs:
   - [end_effector, right_wrist_roll_link]
   - [end_effector, right_wrist_pitch_link]
   - [end_effector, right_wrist_yaw_link]
+
+# motor joint order 
+motor_joint: [
+  'left_hip_pitch_joint',
+  'left_hip_roll_joint',
+  'left_hip_yaw_joint',
+  'left_knee_joint',
+  'left_ankle_pitch_joint',
+  'left_ankle_roll_joint',
+  'right_hip_pitch_joint',
+  'right_hip_roll_joint',
+  'right_hip_yaw_joint',
+  'right_knee_joint',
+  'right_ankle_pitch_joint',
+  'right_ankle_roll_joint',
+  'waist_yaw_joint',
+  'waist_roll_joint',
+  'waist_pitch_joint',
+  'left_shoulder_pitch_joint',
+  'left_shoulder_roll_joint',
+  'left_shoulder_yaw_joint',
+  'left_elbow_joint',
+  'left_wrist_roll_joint',
+  'left_wrist_pitch_joint',
+  'left_wrist_yaw_joint',
+  'right_shoulder_pitch_joint',
+  'right_shoulder_roll_joint',
+  'right_shoulder_yaw_joint',
+  'right_elbow_joint',
+  'right_wrist_roll_joint',
+  'right_wrist_pitch_joint',
+  'right_wrist_yaw_joint',
+]

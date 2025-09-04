@@ -12,7 +12,7 @@ import pyroki as pk
 def solve_online_planning(
     robot: pk.Robot,
     robot_coll: pk.collision.RobotCollision,
-    world_coll: Sequence[pk.collision.CollGeom],
+    world_coll: pk.collision.CollGeom,
     target_link_name: str,
     target_position: onp.ndarray,
     target_wxyz: onp.ndarray,
@@ -56,7 +56,7 @@ def solve_online_planning(
 def _solve_online_planning_jax(
     robot: pk.Robot,
     robot_coll: pk.collision.RobotCollision,
-    world_coll: Sequence[pk.collision.CollGeom],
+    world_coll: pk.collision.CollGeom,
     target_poses: jaxlie.SE3,
     target_links: jnp.ndarray,
     timesteps: jdc.Static[int],
@@ -175,23 +175,23 @@ def _solve_online_planning_jax(
                 traj_var,
                 weight=100.0,
             ),
-            pk.costs.rest_cost(
-                traj_var,
-                jnp.array(traj_var.default_factory())[None],
-                weight=0.01,
-            ),
-            pk.costs.manipulability_cost(
-                jax.tree.map(lambda x: x[None], robot),
-                traj_var,
-                weight=0.01,
-                target_link_indices=target_links,
-            ),
+            # pk.costs.rest_cost(
+            #     traj_var,
+            #     jnp.array(traj_var.default_factory())[None],
+            #     weight=0.01,
+            # ),
+            # pk.costs.manipulability_cost(
+            #     jax.tree.map(lambda x: x[None], robot),
+            #     traj_var,
+            #     weight=0.01,
+            #     target_link_indices=target_links,
+            # ),
             pk.costs.self_collision_cost(
                 jax.tree.map(lambda x: x[None], robot),
                 jax.tree.map(lambda x: x[None], robot_coll),
                 traj_var,
                 weight=10.0,
-                margin=0.02,
+                margin=0.001,
             ),
         ]
     )
@@ -201,11 +201,10 @@ def _solve_online_planning_jax(
                 jax.tree.map(lambda x: x[None], robot),
                 jax.tree.map(lambda x: x[None], robot_coll),
                 traj_var,
-                jax.tree.map(lambda x: x[None], obs),
-                weight=20.0,
-                margin=0.1,
+                jax.tree.map(lambda x: x[None], world_coll),
+                weight=100.0,
+                margin=0.001,
             )
-            for obs in world_coll
         ]
     )
 
@@ -217,7 +216,7 @@ def _solve_online_planning_jax(
             initial_vals=jaxls.VarValues.make(
                 (traj_var.with_value(prev_sols), pose_var.with_value(init_pose_vals))
             ),
-            termination=jaxls.TerminationConfig(max_iterations=20),
+            termination=jaxls.TerminationConfig(max_iterations=50),
         )
     )
     pose_traj = solution[pose_var]

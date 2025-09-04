@@ -1,0 +1,10 @@
+# Goal Definition
+geometry_msgs/PoseStamped ee_goal
+---
+# Result Definition
+trajectory_msgs/JointTrajectory joint_traj
+bool success
+string error_message
+---
+# Feedback Definition
+float32 percent_complete

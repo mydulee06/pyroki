@@ -28,10 +28,6 @@ from trajectory_msgs.msg import JointTrajectoryPoint
 
 from pyroki_ros.action import TrajOpt
 
-from loguru import logger
-
-jaxls.utils.logger.add(sys.stdout, level="SUCCESS")
-
 
 class TrackingWeights(TypedDict):
     position_tracking: float
