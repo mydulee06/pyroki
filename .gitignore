@@ -16,3 +16,4 @@ htmlcov
 .vite
 build
 files_temp/
+files

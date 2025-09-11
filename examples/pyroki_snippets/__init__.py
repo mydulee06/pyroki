@@ -1,4 +1,5 @@
 from ._online_planning import solve_online_planning as solve_online_planning
+from ._online_planning import get_online_planning_solve_fn as get_online_planning_solve_fn
 from ._solve_ik import solve_ik as solve_ik
 from ._solve_ik_with_base import solve_ik_with_base as solve_ik_with_base
 from ._solve_ik_with_collision import solve_ik_with_collision as solve_ik_with_collision

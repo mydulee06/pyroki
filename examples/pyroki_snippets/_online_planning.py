@@ -56,7 +56,7 @@ def solve_online_planning(
 def _solve_online_planning_jax(
     robot: pk.Robot,
     robot_coll: pk.collision.RobotCollision,
-    world_coll: Sequence[pk.collision.CollGeom],
+    world_coll: pk.collision.CollGeom,
     target_poses: jaxlie.SE3,
     target_links: jnp.ndarray,
     timesteps: jdc.Static[int],
@@ -175,23 +175,23 @@ def _solve_online_planning_jax(
                 traj_var,
                 weight=100.0,
             ),
-            pk.costs.rest_cost(
-                traj_var,
-                jnp.array(traj_var.default_factory())[None],
-                weight=0.01,
-            ),
-            pk.costs.manipulability_cost(
-                jax.tree.map(lambda x: x[None], robot),
-                traj_var,
-                weight=0.01,
-                target_link_indices=target_links,
-            ),
+            # pk.costs.rest_cost(
+            #     traj_var,
+            #     jnp.array(traj_var.default_factory())[None],
+            #     weight=0.01,
+            # ),
+            # pk.costs.manipulability_cost(
+            #     jax.tree.map(lambda x: x[None], robot),
+            #     traj_var,
+            #     weight=0.01,
+            #     target_link_indices=target_links,
+            # ),
             pk.costs.self_collision_cost(
                 jax.tree.map(lambda x: x[None], robot),
                 jax.tree.map(lambda x: x[None], robot_coll),
                 traj_var,
                 weight=10.0,
-                margin=0.02,
+                margin=0.001,
             ),
         ]
     )
@@ -201,11 +201,10 @@ def _solve_online_planning_jax(
                 jax.tree.map(lambda x: x[None], robot),
                 jax.tree.map(lambda x: x[None], robot_coll),
                 traj_var,
-                jax.tree.map(lambda x: x[None], obs),
-                weight=20.0,
-                margin=0.1,
+                jax.tree.map(lambda x: x[None], world_coll),
+                weight=100.0,
+                margin=0.001,
             )
-            for obs in world_coll
         ]
     )
 
@@ -217,7 +216,7 @@ def _solve_online_planning_jax(
             initial_vals=jaxls.VarValues.make(
                 (traj_var.with_value(prev_sols), pose_var.with_value(init_pose_vals))
             ),
-            termination=jaxls.TerminationConfig(max_iterations=20),
+            termination=jaxls.TerminationConfig(max_iterations=50),
         )
     )
     pose_traj = solution[pose_var]
@@ -226,3 +225,42 @@ def _solve_online_planning_jax(
         pose_traj.translation(),
         pose_traj.rotation().wxyz,
     )
+
+
+def get_online_planning_solve_fn(
+    robot: pk.Robot,
+    robot_coll: pk.collision.RobotCollision,
+    target_link_name: str,
+    timesteps: int,
+    dt: float,
+) -> tuple[onp.ndarray, onp.ndarray, onp.ndarray]:
+    """Solve online planning solve function."""
+    target_link_indices = [robot.links.names.index(target_link_name)]
+    target_links = jnp.array(target_link_indices)
+
+    # Warm start: use previous solution shifted by one step.
+    timesteps = timesteps + 1  # for start pose cost.
+
+    @jdc.jit
+    def solve_fn(target_position, target_wxyz, start_cfg, prev_sols, world_coll):
+        target_poses = jaxlie.SE3(
+            jnp.concatenate([jnp.array(target_wxyz), jnp.array(target_position)], axis=-1)
+        )
+        sol_traj, sol_pos, sol_wxyz, summary = _solve_online_planning_jax(
+            robot,
+            robot_coll,
+            world_coll,
+            target_poses,
+            target_links,
+            timesteps,
+            dt,
+            start_cfg,
+            jnp.concatenate([prev_sols, prev_sols[-1:]], axis=0),
+        )
+        sol_traj = sol_traj[1:]
+        sol_pos = sol_pos[1:]
+        sol_wxyz = sol_wxyz[1:]
+
+        return sol_traj, sol_pos, sol_wxyz
+
+    return solve_fn

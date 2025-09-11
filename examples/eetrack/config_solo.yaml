@@ -26,7 +26,7 @@ welding_object:
 
 obstacle:
   mesh_path: null
-  urdf_path: "eetrack/weld_objects/specimen_scene.urdf"
+  urdf_path: "eetrack/weld_objects/specimen_scene2.urdf"
 
 # Batch search space settings
 search_space:

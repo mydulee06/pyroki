@@ -126,7 +126,7 @@ def main():
 
     sit_height_cm = int(100*config['robot']['sit_target_height'])
     sampled_z_mm = int(1000*sampled_z)
-    data_paths = sorted(glob(f"files_temp/batch_pipeline_h*_z{sampled_z_mm}/dummy_exp/batch_eetrack_results_inverse.pt"))
+    data_paths = sorted(glob(f"files/batch_pipeline_h38_z300/dummy_exp/batch_eetrack_results_inverse.pt"))
     data_list = [torch.load(data_path, weights_only=False) for data_path in data_paths]
     success_rates = [data["success_rate"] for data in data_list]
     high_sr_idx = np.argmax(success_rates)
@@ -148,7 +148,7 @@ def main():
         obstacle_urdf = yourdfpy.URDF.load(obstacle_cfg["urdf_path"])
         scene = obstacle_urdf.scene
 
-    scene.apply_translation([0.045, 0, -sampled_z])
+    scene.apply_translation([0,0,-sampled_z])
     scene.add_geometry(welding_object.trimesh, "welding_object")
     scene_mesh = scene.to_mesh()
 

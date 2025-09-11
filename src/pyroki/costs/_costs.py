@@ -182,6 +182,33 @@ def self_collision_cost(
     return (residual * weight).flatten()
 
 
+def compute_collision_costs(robot, coll_capsules, robot_cfg, active_idx_i, active_idx_j, safety_margin, collision_weight, link_indices_for_collision):
+    Ts_link_world_wxyz_xyz = robot.forward_kinematics(cfg=robot_cfg)
+    Ts_link_world_wxyz_xyz = Ts_link_world_wxyz_xyz[jnp.array(link_indices_for_collision)]
+    import jaxlie
+    coll_world = coll_capsules.transform(jaxlie.SE3(Ts_link_world_wxyz_xyz))
+    from pyroki.collision._collision import pairwise_collide
+    dist_matrix = pairwise_collide(coll_world, coll_world)
+    dists = dist_matrix[active_idx_i, active_idx_j]
+    costs = jnp.maximum(0, safety_margin - dists) * collision_weight
+    return costs, dists
+
+
+@jax.jit
+def collision_cost_jax(
+    robot_cfg,
+    robot,
+    coll_capsules,
+    active_idx_i,
+    active_idx_j,
+    safety_margin,
+    collision_weight,
+    link_indices_for_collision
+):
+    costs, _ = compute_collision_costs(robot, coll_capsules, robot_cfg, active_idx_i, active_idx_j, safety_margin, collision_weight, link_indices_for_collision)
+    return jnp.array([jnp.sum(costs)])
+
+
 @Cost.create_factory
 def world_collision_cost(
     vals: VarValues,
