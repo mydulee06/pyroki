@@ -34,9 +34,15 @@ search_space:
   # x_range: [-0.4, 0.8]      # [min, max]
   # y_range: [-0.9, 0.4]    # [min, max]
   # angle_range: [-0.5, 1.0] # [min, max] (rad)
-  x_range: [0.35, 0.35]      # [min, max]
-  y_range: [-0.25, -0.25]    # [min, max]
-  angle_range: [0.0, 0.0] # [min, max] (rad)
+  # x_range: [0.35, 0.35]      # [min, max]
+  # y_range: [-0.25, -0.25]    # [min, max]
+  # angle_range: [0.0, 0.0] # [min, max] (rad)
+  x_range: [-0.49950311, -0.49950311]      # [min, max]
+  y_range: [0.16916784, 0.16916784]    # [min, max]
+  angle_range: [0.7085, 0.7085] # [min, max] (rad)
+  # x_range: [-0.5554, -0.4436]      # [min, max]
+  # y_range: [0.0866, 0.2517]    # [min, max]
+  # angle_range: [0.5585, 0.8585] # [min, max] (rad)
   n_samples: 50000
   batch_size: 100
 
@@ -51,8 +57,8 @@ robot:
     - "right_wrist_pitch_joint"
     - "right_wrist_roll_joint"
     - "right_wrist_yaw_joint"
-  sit_terminal_states_path: eetrack/sit_trajectories.npz
-  sit_target_height: 0.42
+  sit_terminal_states_path: eetrack/sit_diverse_foot_traj.npz
+  sit_target_height: 0.38
 
 # Optimization weights
 weights:
@@ -91,7 +97,7 @@ collision:
 visualization:
   target_color: [255, 0, 0]  # Red
   point_size: 0.01
-  sleep_time: 0.05
+  sleep_time: 0.02
 
 # Error tolerance settings
 tolerance:

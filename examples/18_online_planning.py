@@ -201,9 +201,9 @@ def main():
     # Create interactive controller for IK target.
     urdf.update_cfg(default_joint_pos[-7:])
     init_ee_T = urdf.get_transform("end_effector")
-    ik_target_handle = server.scene.add_transform_controls(
-        "/ik_target", scale=0.2, position=init_ee_T[:3,3], wxyz=jaxlie.SO3.from_matrix(init_ee_T[:3,:3]).wxyz
-    )
+    # ik_target_handle = server.scene.add_transform_controls(
+    #     "/ik_target", scale=0.2, position=init_ee_T[:3,3], wxyz=jaxlie.SO3.from_matrix(init_ee_T[:3,:3]).wxyz
+    # )
 
     reset_button = server.gui.add_button("Reset")
     scene_vis = server.scene.add_mesh_trimesh("/scene", mesh=scene_coll.to_trimesh())
@@ -379,7 +379,7 @@ def main():
             sol_traj = init_sol_traj.copy()
         reset_button.on_click(lambda _: button_callback())
 
-        sol_traj, sol_pos, sol_wxyz, summary = pks.solve_online_planning(
+        sol_traj, sol_pos, sol_wxyz = pks.solve_online_planning(
             robot=robot,
             robot_coll=robot_coll,
             world_coll=scene_coll_curr,
@@ -392,7 +392,6 @@ def main():
             dt=dt,
             start_cfg=sol_traj[0],
             prev_sols=sol_traj,
-            collision_pairs=collision_pairs,
         )
 
         root_pose_obj = (welding_object_pose @ jaxlie.SE3.from_translation(np.array([0,0,-sampled_z]))).inverse()
@@ -405,8 +404,8 @@ def main():
         data_dict["target_ee_pos_traj"].append(sol_pos[:,0])
         data_dict["target_ee_wxyz_traj"].append(sol_wxyz[:,0])
 
-    # data_dict = {k: np.stack(v) for k, v in data_dict.items()}
-    # np.savez("trajopt_result.npz", **data_dict)
+        data_dict = {k: np.stack(v) for k, v in data_dict.items()}
+        np.savez("trajopt_result.npz", **data_dict)
 
 
         # Only for vmap. Too slow

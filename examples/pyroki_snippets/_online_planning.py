@@ -174,24 +174,25 @@ def _solve_online_planning_jax(
                 jax.tree.map(lambda x: x[None], robot),
                 traj_var,
                 weight=100.0,
+                margin=0.1,
             ),
             # pk.costs.rest_cost(
             #     traj_var,
             #     jnp.array(traj_var.default_factory())[None],
             #     weight=0.01,
             # ),
-            # pk.costs.manipulability_cost(
-            #     jax.tree.map(lambda x: x[None], robot),
-            #     traj_var,
-            #     weight=0.01,
-            #     target_link_indices=target_links,
-            # ),
+            pk.costs.manipulability_cost(
+                jax.tree.map(lambda x: x[None], robot),
+                traj_var,
+                weight=0.01,
+                target_link_indices=target_links,
+            ),
             pk.costs.self_collision_cost(
                 jax.tree.map(lambda x: x[None], robot),
                 jax.tree.map(lambda x: x[None], robot_coll),
                 traj_var,
-                weight=10.0,
-                margin=0.001,
+                weight=1.0,
+                margin=0.05,
             ),
         ]
     )
@@ -202,8 +203,8 @@ def _solve_online_planning_jax(
                 jax.tree.map(lambda x: x[None], robot_coll),
                 traj_var,
                 jax.tree.map(lambda x: x[None], world_coll),
-                weight=100.0,
-                margin=0.001,
+                weight=1000.0,
+                margin=0.05,
             )
         ]
     )
