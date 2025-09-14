@@ -720,7 +720,8 @@
   </link>
   <joint name="zed2i_left_camera_optical_joint" type="fixed">
     <!-- optical_offset_x=-0.01 -->
-    <origin xyz="-0.01 0 0" rpy="-1.5707963267948966 0 -1.5707963267948966"/>
+    <!-- <origin xyz="-0.01 0 0" rpy="-1.5707963267948966 0 -1.5707963267948966"/> -->
+    <origin xyz="0.01 0 0.04" rpy="-1.5707963267948966 0 -1.5707963267948966"/>
     <parent link="zed2i_left_camera_frame"/>
     <child link="zed2i_left_camera_optical_frame"/>
   </joint>
@@ -1281,7 +1282,7 @@
     <child link="welder2"/>
   </joint> -->
   <joint name="end_effector_joint" type="fixed">
-    <origin xyz="0.0 0 0.0" rpy="0 0 0"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
     <parent link="welder"/>
     <child link="end_effector"/>
   </joint>
