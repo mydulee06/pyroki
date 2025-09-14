@@ -18,6 +18,7 @@ from pyroki.collision import HalfSpace, RobotCollision, Sphere, Capsule
 from pyroki.collision._robot_collision_custom import RobotCollisionV2
 from robot_descriptions.loaders.yourdfpy import load_robot_description
 from viser.extras import ViserUrdf
+from itertools import product
 
 import jax
 import jax.numpy as jnp
@@ -78,7 +79,10 @@ def load_robot(config):
     urdf_obj.update_cfg(joint_pos[lab2yourdf])
 
     collision_cfg = config.get('collision', {})
-    ignore_pairs = tuple(tuple(pair) for pair in collision_cfg.get('ignore_pairs', []))
+    ignore_pairs = list(tuple(pair) for pair in collision_cfg.get('ignore_pairs', []))
+    exclude_links = collision_cfg.get('exclude_links', [])
+    ignore_pairs += list(product(exclude_links, exclude_links))
+
     robot_collision = RobotCollision.from_urdf(
         urdf_obj,
         user_ignore_pairs=ignore_pairs,
@@ -214,10 +218,10 @@ def main():
         cap_list.append(jax.tree.map(lambda x: x[i], coll_world))
     welder_cap = cap_list[-2]
     new_welder_cap = Capsule.from_radius_height(
-        0.4*welder_cap.radius,
+        0.8*welder_cap.radius,
         welder_cap.height,
-        welder_cap.pose.translation() + np.array([0, 0, 0.005]),
-        (welder_cap.pose.rotation() @ jaxlie.SO3.from_y_radians(np.radians(17.5))).wxyz,
+        welder_cap.pose.translation() + np.array([0.0025, 0, 0.004]),
+        (welder_cap.pose.rotation() @ jaxlie.SO3.from_y_radians(np.radians(5.0))).wxyz,
     )
     cap_list[-2] = new_welder_cap
     # trimesh.Scene([welder_cap.to_trimesh(), trimesh.creation.axis(transform=welder_cap.pose.as_matrix()), new_welder_cap.to_trimesh()]).show()
@@ -298,7 +302,7 @@ def main():
         # Update the mesh in viser scene with red color
         wireframe_mesh.visual.face_colors = [255, 0, 0, 255]  # Red color
         link_coll_vis[link_name] = server.scene.add_mesh_trimesh(
-            f"collision_capsule_{link_name}",
+            f"collision/{link_name}",
             wireframe_mesh,
         )
         link_coll_vis[link_name].position = fk_results_collision[i, 4:]
