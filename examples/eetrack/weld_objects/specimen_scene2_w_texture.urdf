@@ -1,0 +1,188 @@
+<?xml version="1.0" encoding="utf-8"?>
+<robot name="g1_29dof_rev_1_0">
+  <link name="base"/>
+  <joint name="mid_base" type="fixed">
+    <origin xyz="0 0 0.02" rpy="0 0 0"/>
+    <parent link="base"/>
+    <child link="mid_base"/>
+  </joint>
+  <link name="mid_base">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <!-- <box size="0.04, 0.3, 0.04"/> -->
+        <mesh filename="meshes/alum_profile.obj" scale="1 1 0.3"/>
+      </geometry>
+      <material name="dark">
+        <color rgba="0.4 0.4 0.4 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.04, 0.3, 0.04"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="base_mid_left" type="fixed">
+    <origin xyz="0.27 0.08 0" rpy="0 0 0"/>
+    <parent link="mid_base"/>
+    <child link="left_base"/>
+  </joint>
+  <link name="left_base">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 1.5708 0"/>
+      <geometry>
+        <!-- <box size="0.5, 0.04, 0.04"/> -->
+        <mesh filename="meshes/alum_profile.obj" scale="1 1 0.5"/>
+      </geometry>
+      <material name="dark">
+        <color rgba="0.4 0.4 0.4 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.5, 0.04, 0.04"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="left_base_column" type="fixed">
+    <origin xyz="-0.19 0 0.18" rpy="0 0 0"/>
+    <parent link="left_base"/>
+    <child link="left_column"/>
+  </joint>
+  <link name="left_column">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <!-- <box size="0.04, 0.04, 0.32"/> -->
+        <mesh filename="meshes/alum_profile.obj" scale="1 1 0.32"/>
+      </geometry>
+      <material name="dark">
+        <color rgba="0.4 0.4 0.4 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.04, 0.04, 0.32"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="left_column_rack" type="fixed">
+    <origin xyz="-0.055 0 0.08" rpy="0 0 0"/>
+    <parent link="left_column"/>
+    <child link="left_rack"/>
+  </joint>
+  <link name="left_rack">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 1.5708 0"/>
+      <geometry>
+        <!-- <box size="0.07, 0.04, 0.04"/> -->
+        <mesh filename="meshes/alum_profile.obj" scale="1 1 0.07"/>
+      </geometry>
+      <material name="dark">
+        <color rgba="0.4 0.4 0.4 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.07, 0.04, 0.04"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="base_mid_right" type="fixed">
+    <origin xyz="0.27 -0.08 0" rpy="0 0 0"/>
+    <parent link="mid_base"/>
+    <child link="right_base"/>
+  </joint>
+  <link name="right_base">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 1.5708 0"/>
+      <geometry>
+        <!-- <box size="0.5, 0.04, 0.04"/> -->
+        <mesh filename="meshes/alum_profile.obj" scale="1 1 0.5"/>
+      </geometry>
+      <material name="dark">
+        <color rgba="0.4 0.4 0.4 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.5, 0.04, 0.04"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="right_base_column" type="fixed">
+    <origin xyz="-0.19 0 0.18" rpy="0 0 0"/>
+    <parent link="right_base"/>
+    <child link="right_column"/>
+  </joint>
+  <link name="right_column">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <!-- <box size="0.04, 0.04, 0.32"/> -->
+        <mesh filename="meshes/alum_profile.obj" scale="1 1 0.32"/>
+      </geometry>
+      <material name="dark">
+        <color rgba="0.4 0.4 0.4 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.04, 0.04, 0.32"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="right_column_rack" type="fixed">
+    <origin xyz="-0.055 0 0.08" rpy="0 0 0"/>
+    <parent link="right_column"/>
+    <child link="right_rack"/>
+  </joint>
+  <link name="right_rack">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 1.5708 0"/>
+      <geometry>
+        <!-- <box size="0.07, 0.04, 0.04"/> -->
+        <mesh filename="meshes/alum_profile.obj" scale="1 1 0.07"/>
+      </geometry>
+      <material name="dark">
+        <color rgba="0.4 0.4 0.4 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.07, 0.04, 0.04"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="mid_base_rack" type="fixed">
+    <origin xyz="-0.03 0 0.26" rpy="0 0 0"/>
+    <parent link="mid_base"/>
+    <child link="mid_rack"/>
+  </joint>
+  <link name="mid_rack">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <!-- <box size="0.04, 0.2, 0.04"/> -->
+        <mesh filename="meshes/alum_profile.obj" scale="1 1 0.2"/>
+      </geometry>
+      <material name="dark">
+        <color rgba="0.4 0.4 0.4 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.04, 0.2, 0.04"/>
+      </geometry>
+    </collision>
+  </link>
+</robot>

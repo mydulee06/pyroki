@@ -39,7 +39,7 @@ search_space:
 
 # Robot configuration
 robot:
-  urdf_path: "eetrack/robots/g1_29dof_rev_1_0_ver4_camera_mount_v4.urdf"
+  urdf_path: "eetrack/robots/g1_29dof_rev_1_0_zed2i_with_welder_v3.urdf"
   movable_joints:
     - "right_shoulder_pitch_joint"
     - "right_shoulder_roll_joint"

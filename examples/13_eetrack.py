@@ -156,6 +156,7 @@ def analyze_trajectory(robot, joints, target_poses, config, collision_pairs=None
     max_position_error = 0.0
     max_orientation_error = 0.0
     max_collision_cost = 0.0
+    all_within_joint_limits = True
     
     for t in range(num_timesteps):
         robot_cfg = joints[t]
@@ -187,18 +188,24 @@ def analyze_trajectory(robot, joints, target_poses, config, collision_pairs=None
             )
             total_collision_cost = jnp.sum(costs)
             max_collision_cost = jnp.maximum(max_collision_cost, total_collision_cost)
-    
-    return max_position_error, max_orientation_error, max_collision_cost
 
-def visualize_trajectory(server, urdf_vis, base_frame, Ts_world_root, joints, target_poses_se3, config, robot, position_failed, orientation_failed, robot_collision):
+        within_joint_limits = (
+            (robot.joints.lower_limits < robot_cfg) &
+            (robot_cfg < robot.joints.upper_limits)
+        ).all()
+        all_within_joint_limits = all_within_joint_limits and within_joint_limits
+    
+    return max_position_error, max_orientation_error, max_collision_cost, all_within_joint_limits
+
+def visualize_trajectory(server, urdf_vis, base_frame, Ts_world_root, joints, target_poses_se3, config, robot, position_failed, orientation_failed, joint_limit_failed, robot_collision):
     num_timesteps = len(target_poses_se3)
     playing = server.gui.add_checkbox("playing", True)
     timestep_slider = server.gui.add_slider("timestep", 0, num_timesteps - 1, 1, 0)
     current_error_text = server.gui.add_text("Current Error: ", "Position: 0.0000 m, Orientation: 0.0000 rad")
     status_text = server.gui.add_text("Status: ", "")
     # 최초 상태 동기화
-    if position_failed or orientation_failed:
-        status_text.value = "❌ FAILED: " + ("Position" if position_failed else "") + (" and " if position_failed and orientation_failed else "") + ("Orientation" if orientation_failed else "") + " max error exceeded tolerance"
+    if position_failed or orientation_failed or joint_limit_failed:
+        status_text.value = "❌ FAILED: " + ("Position" if position_failed else "") + (" and " if position_failed and orientation_failed else "") + ("Orientation" if orientation_failed else "") + " max error exceeded tolerance. " + ("Joint limit violation" if joint_limit_failed else "")
     else:
         status_text.value = "✅ PASSED: All errors within tolerance"
     
@@ -613,17 +620,19 @@ def main():
         collision_pairs=collision_pairs
     )
     # Error analysis based on SE3 object list (as in old version)
-    max_position_error, max_orientation_error, max_collision_cost = analyze_trajectory(
+    max_position_error, max_orientation_error, max_collision_cost, all_within_joint_limits = analyze_trajectory(
         robot, joints, target_poses, config, collision_pairs, robot_collision, safety_margin, weights['collision']
     )
     position_failed = max_position_error > config['tolerance']['position_error']
     orientation_failed = max_orientation_error > config['tolerance']['orientation_error']
     collision_failed = max_collision_cost > 0.001  # collision cost threshold
+    joint_limit_failed = not all_within_joint_limits
     print(f"=== Error Analysis ===")
     print(f"Max Position Error: {max_position_error:.4f} m (tolerance: {config['tolerance']['position_error']:.4f} m)")
     print(f"Max Orientation Error: {max_orientation_error:.4f} rad (tolerance: {config['tolerance']['orientation_error']:.4f} rad)")
     print(f"Max Collision Cost: {max_collision_cost:.6f} (threshold: 0.001)")
-    if position_failed or orientation_failed or collision_failed:
+    print(f"All within joint limits: {all_within_joint_limits}")
+    if position_failed or orientation_failed or collision_failed or joint_limit_failed:
         failed_reasons = []
         if position_failed:
             failed_reasons.append("Position")
@@ -631,6 +640,8 @@ def main():
             failed_reasons.append("Orientation")
         if collision_failed:
             failed_reasons.append("Collision")
+        if joint_limit_failed:
+            failed_reasons.append("Joint limit")
         print(f"❌ FAILED: {' and '.join(failed_reasons)} max error exceeded tolerance")
     else:
         print(f"✅ PASSED: All errors within tolerance")
@@ -643,7 +654,7 @@ def main():
         topk=10
     )
     # Use target_poses_se3 in visualization loop
-    visualize_trajectory(server, urdf_vis, base_frame, Ts_world_root, joints, target_poses_se3, config, robot, position_failed, orientation_failed, robot_collision)
+    visualize_trajectory(server, urdf_vis, base_frame, Ts_world_root, joints, target_poses_se3, config, robot, position_failed, orientation_failed, joint_limit_failed, robot_collision)
 
 if __name__ == "__main__":
     main()

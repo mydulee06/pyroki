@@ -34,7 +34,7 @@ COPY . /root/pyroki
 
 # Install pyroki
 WORKDIR /root/pyroki
-RUN python3 -m pip install --no-cache-dir --ignore-installed .
+RUN python3 -m pip install --no-cache-dir -e .
 
 # Download sit terminal states and trajectories
 # RUN cd examples/eetrack && \

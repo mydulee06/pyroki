@@ -26,7 +26,7 @@ welding_object:
 
 obstacle:
   mesh_path: null
-  urdf_path: "eetrack/weld_objects/specimen_scene.urdf"
+  urdf_path: "eetrack/weld_objects/specimen_scene2.urdf"
 
 # Batch search space settings
 search_space:
@@ -37,9 +37,12 @@ search_space:
   # x_range: [0.35, 0.35]      # [min, max]
   # y_range: [-0.25, -0.25]    # [min, max]
   # angle_range: [0.0, 0.0] # [min, max] (rad)
-  x_range: [-0.41874041, -0.41874041]      # [min, max]
-  y_range: [0.34411859, 0.34411859]    # [min, max]
-  angle_range: [0.00051799, 0.00051799] # [min, max] (rad)
+  x_range: [-0.49950311, -0.49950311]      # [min, max]
+  y_range: [0.16916784, 0.16916784]    # [min, max]
+  angle_range: [0.7085, 0.7085] # [min, max] (rad)
+  # x_range: [-0.5554, -0.4436]      # [min, max]
+  # y_range: [0.0866, 0.2517]    # [min, max]
+  # angle_range: [0.5585, 0.8585] # [min, max] (rad)
   n_samples: 50000
   batch_size: 100
 
@@ -54,15 +57,15 @@ robot:
     - "right_wrist_pitch_joint"
     - "right_wrist_roll_joint"
     - "right_wrist_yaw_joint"
-  sit_terminal_states_path: eetrack/sit_trajectories.npz
-  sit_target_height: 0.3
+  sit_terminal_states_path: eetrack/sit_diverse_foot_traj.npz
+  sit_target_height: 0.38
 
 # Optimization weights
 weights:
   position_tracking: 100.0
   orientation_tracking: 50.0
   smoothness: 20.0
-  joint_limits: 1.0
+  joint_limits: 10000.0
   collision: 1.0
   rest_pose: 0.0
 
@@ -94,7 +97,7 @@ collision:
 visualization:
   target_color: [255, 0, 0]  # Red
   point_size: 0.01
-  sleep_time: 0.05
+  sleep_time: 0.02
 
 # Error tolerance settings
 tolerance:
@@ -102,7 +105,7 @@ tolerance:
   orientation_error: 0.087  # Orientation error tolerance (radians) - ~5 degrees
 
 optimization:
-  max_iterations: 50
+  max_iterations: 100
 collision_pairs:
   - [right_shoulder_pitch_link, pelvis]
   - [right_shoulder_pitch_link, pelvis_contour_link]

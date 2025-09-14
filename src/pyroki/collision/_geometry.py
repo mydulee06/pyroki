@@ -248,7 +248,7 @@ class Capsule(CollGeom):
         height = results["height"]
         
         # Reduce capsule height to 80% to avoid overly conservative collision detection
-        radius_reduced = radius * 0.9
+        radius_reduced = radius #* 0.9
         height_reduced = height * 0.8
         
         tf_mat = results["transform"]

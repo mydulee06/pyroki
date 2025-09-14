@@ -7,6 +7,7 @@ import numpy as np
 from pathlib import Path
 from typing import TypedDict
 import threading
+import trimesh
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
@@ -174,32 +175,50 @@ class TrajOptSingleEEActionServer(Node):
 
     def _load_robot(self):
         urdf_path = self.config['robot']['urdf_path']
-        urdf_obj = yourdfpy.URDF.load(urdf_path)
-        self.num_joints = urdf_obj.num_dofs
+        self.urdf_obj = yourdfpy.URDF.load(urdf_path)
+        self.num_joints = self.urdf_obj.num_dofs
         sit_terminal_states = np.load(self.config['robot']['sit_terminal_states_path'])
         idx = np.abs(sit_terminal_states["target_height"] - self.config['robot']['sit_target_height']).argmin()
         joint_pos = sit_terminal_states["joint_state"][idx, 0]
-        lab2yourdf = [np.where(sit_terminal_states["lab_joint"] == jn)[0].item() for jn in urdf_obj.actuated_joint_names]
-        urdf_obj.update_cfg(joint_pos[lab2yourdf])
-        for joint in urdf_obj.robot.joints:
-            if joint.name in urdf_obj.actuated_joint_names and joint.name not in self.config['robot']['movable_joints']:
-                joint.type = "fixed"
-                joint.origin = urdf_obj.get_transform(joint.child, joint.parent)
-        self.modified_urdf = yourdfpy.URDF(urdf_obj.robot, mesh_dir=Path(urdf_path).parent)
+        lab2yourdf = [np.where(sit_terminal_states["lab_joint"] == jn)[0].item() for jn in self.urdf_obj.actuated_joint_names]
+        self.urdf_obj.update_cfg(joint_pos[lab2yourdf])
 
-        self.mot2yourdf = [self.config["motor_joint"].index(jn) for jn in urdf_obj.actuated_joint_names]
-        self.yourdf2mot = [urdf_obj.actuated_joint_names.index(jn) for jn in self.config["motor_joint"]]
+        self.mot2yourdf = [self.config["motor_joint"].index(jn) for jn in self.urdf_obj.actuated_joint_names]
+        self.yourdf2mot = [self.urdf_obj.actuated_joint_names.index(jn) for jn in self.config["motor_joint"]]
+        self.fixed_joint_ids = [i for i, jn in enumerate(self.urdf_obj.actuated_joint_names) if jn not in self.config["robot"]["movable_joints"]]
 
         # Robot
-        self.robot = pk.Robot.from_urdf(self.modified_urdf)
+        self.robot = pk.Robot.from_urdf(self.urdf_obj)
 
         # Robot collision
         collision_cfg = self.config.get('collision', {})
         ignore_pairs = tuple(tuple(pair) for pair in collision_cfg.get('ignore_pairs', []))
         self.robot_coll = RobotCollision.from_urdf(
-            self.modified_urdf,
+            self.urdf_obj,
             user_ignore_pairs=ignore_pairs,
             ignore_immediate_adjacents=collision_cfg.get('ignore_adjacent_links', True),
+        )
+
+        coll_world = self.robot_coll.coll
+        # Reduce capsule size for welder.
+        cap_list = []
+        for i in range(len(coll_world.size)):
+            cap_list.append(jax.tree.map(lambda x: x[i], coll_world))
+        welder_cap = cap_list[-2]
+        new_welder_cap = Capsule.from_radius_height(
+            0.8*welder_cap.radius,
+            welder_cap.height,
+            welder_cap.pose.translation() + np.array([0.0025, 0, 0.004]),
+            (welder_cap.pose.rotation() @ jaxlie.SO3.from_y_radians(np.radians(5.0))).wxyz,
+        )
+        cap_list[-2] = new_welder_cap
+        coll_world = jax.tree.map(lambda *args: jnp.stack(args), *cap_list)
+        self.robot_coll = RobotCollision(
+            self.robot_coll.num_links,
+            self.robot_coll.link_names,
+            coll_world,
+            self.robot_coll.active_idx_i,
+            self.robot_coll.active_idx_j,
         )
 
         self.root_link_name = "pelvis"
@@ -260,7 +279,6 @@ class TrajOptSingleEEActionServer(Node):
             1.0052238 ,  0.00622952, -0.01496937, -0.00291689, -0.23249201, -0.34823957,  
             0.01615466,  0.9942355 ,  0.00419126, -0.01379494,  0.00628898
         ])
-        curr_right_arm_joint_pos = curr_joint_pos[-7:]
 
         # TODO: implment this.
         # obj_pos_root, obj_quat_root = body_pose(self.tf_buffer, "welding_object", self.root_link_name, self.get_clock().now())
@@ -271,7 +289,7 @@ class TrajOptSingleEEActionServer(Node):
             translation=obj_pos_root,
         )
 
-        return curr_right_arm_joint_pos, welding_object_pose
+        return curr_joint_pos, welding_object_pose
     
 
     def transform_se3_to_root(self, se3, frame_id):
@@ -306,6 +324,7 @@ class TrajOptSingleEEActionServer(Node):
             to_welding_init_se3.translation(),
         )
         init_sol_traj[0] = curr_joint_pos
+        init_sol_traj[:,:-7] = curr_joint_pos[:-7]
 
         return init_sol_traj
 
@@ -331,6 +350,8 @@ class TrajOptSingleEEActionServer(Node):
             dt=self.dt,
             start_cfg=init_sol_traj[0],
             prev_sols=init_sol_traj,
+            fixed_joint_ids=self.fixed_joint_ids,
+            default_joint_pos=np.zeros(self.num_joints),
         )
 
 
@@ -357,6 +378,8 @@ class TrajOptSingleEEActionServer(Node):
             dt=self.dt,
             start_cfg=init_sol_traj[0],
             prev_sols=init_sol_traj,
+            fixed_joint_ids=self.fixed_joint_ids,
+            default_joint_pos=curr_joint_pos,
         )
 
         stamp = self.get_clock().now().to_msg()
@@ -381,6 +404,82 @@ class TrajOptSingleEEActionServer(Node):
         return result
 
 
+    def _add_collision_mesh(self):
+        link_indices_for_collision = [self.robot.links.names.index(name) for name in self.robot_coll.link_names]
+        # Update each collision capsule
+        self.link_coll_vis = {}
+        fk_poses_arr = self.robot.forward_kinematics(cfg=np.zeros(self.num_joints))
+        fk_results_collision = fk_poses_arr[jnp.array(link_indices_for_collision)]
+        coll_world = self.robot_coll.coll
+        for i, link_name in enumerate(self.robot_coll.link_names):
+            capsule = jax.tree.map(lambda x: x[i], coll_world)
+            capsule_mesh = capsule.to_trimesh()
+            
+            # Create wireframe by extracting edges and creating thin cylinders
+            edges = capsule_mesh.edges_unique
+            vertices = capsule_mesh.vertices
+            
+            # Create thin cylinders for each edge to simulate wireframe
+            edge_meshes = []
+            for edge in edges:
+                v1, v2 = vertices[edge[0]], vertices[edge[1]]
+                edge_length = np.linalg.norm(v2 - v1)
+                if edge_length > 0.001:  # Only create edge if length is significant
+                    # Create thin cylinder for this edge
+                    edge_cylinder = trimesh.creation.cylinder(
+                        radius=0.001,  # Very thin radius
+                        height=edge_length,
+                        sections=6
+                    )
+                    
+                    # Position and orient the cylinder
+                    center = (v1 + v2) / 2
+                    direction = v2 - v1
+                    direction_normalized = direction / np.linalg.norm(direction)
+                    
+                    # Create rotation matrix to align cylinder with edge
+                    z_axis = np.array([0, 0, 1])
+                    if np.allclose(direction_normalized, z_axis):
+                        rotation_matrix = np.eye(3)
+                    else:
+                        # Find rotation to align z-axis with edge direction
+                        rotation_axis = np.cross(z_axis, direction_normalized)
+                        if np.linalg.norm(rotation_axis) > 1e-6:
+                            rotation_axis = rotation_axis / np.linalg.norm(rotation_axis)
+                            angle = np.arccos(np.clip(np.dot(z_axis, direction_normalized), -1, 1))
+                            # Create rotation matrix using Rodrigues' formula
+                            K = np.array([[0, -rotation_axis[2], rotation_axis[1]],
+                                            [rotation_axis[2], 0, -rotation_axis[0]],
+                                            [-rotation_axis[1], rotation_axis[0], 0]])
+                            rotation_matrix = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
+                        else:
+                            rotation_matrix = np.eye(3)
+                    
+                    # Apply transform
+                    transform_matrix = np.eye(4)
+                    transform_matrix[:3, :3] = rotation_matrix
+                    transform_matrix[:3, 3] = center
+                    edge_cylinder.apply_transform(transform_matrix)
+                    
+                    edge_meshes.append(edge_cylinder)
+            
+            # Combine all edge meshes
+            if edge_meshes:
+                wireframe_mesh = trimesh.util.concatenate(edge_meshes)
+            else:
+                # Fallback: use original mesh
+                wireframe_mesh = capsule_mesh
+            
+            # Update the mesh in viser scene with red color
+            wireframe_mesh.visual.face_colors = [255, 0, 0, 255]  # Red color
+            self.link_coll_vis[link_name] = self.server.scene.add_mesh_trimesh(
+                f"collision_capsule_{link_name}",
+                wireframe_mesh,
+            )
+            self.link_coll_vis[link_name].position = fk_results_collision[i, 4:]
+            self.link_coll_vis[link_name].wxyz = fk_results_collision[i, :4]
+
+
     def _init_visualizer(self):
         self.server = viser.ViserServer()
 
@@ -388,7 +487,7 @@ class TrajOptSingleEEActionServer(Node):
         self.timestep_slider = self.server.gui.add_slider("timestep", 0, self.len_traj - 1, 1, 0)
 
         self.server.scene.add_grid("/ground", width=2, height=2, cell_size=0.1)
-        self.urdf_vis = ViserUrdf(self.server, self.modified_urdf, root_node_name="/robot")
+        self.urdf_vis = ViserUrdf(self.server, self.urdf_obj, root_node_name="/robot")
         self.scene_coll_vis = self.server.scene.add_mesh_trimesh("/scene", mesh=self.scene_coll.to_trimesh())
         # welding_object_vis = server.scene.add_mesh_trimesh("/welding_object", mesh=welding_object_coll.to_trimesh())
         self.target_frame_handle = self.server.scene.add_batched_axes(
@@ -398,6 +497,7 @@ class TrajOptSingleEEActionServer(Node):
             batched_positions=np.zeros((25, 3)),
             batched_wxyzs=np.array([[1.0, 0.0, 0.0, 0.0]] * 25),
         )
+        self._add_collision_mesh()
 
         self.vis = False
 
@@ -415,6 +515,7 @@ class TrajOptSingleEEActionServer(Node):
 
 
     def _vis_trajectory_callback(self):
+        link_indices_for_collision = [self.robot.links.names.index(name) for name in self.robot_coll.link_names]
         while True:
             time.sleep(0.02)
 
@@ -430,6 +531,13 @@ class TrajOptSingleEEActionServer(Node):
                 self.urdf_vis.update_cfg(
                     self.joint_traj_vis[t]
                 )  # The first step of the online trajectory solution.
+
+                # Update collision capsules
+                fk_poses_arr = self.robot.forward_kinematics(cfg=self.joint_traj_vis[t])
+                fk_results_collision = fk_poses_arr[jnp.array(link_indices_for_collision)]
+                for i, link_name in enumerate(self.robot_coll.link_names):
+                    self.link_coll_vis[link_name].position = fk_results_collision[i, 4:]
+                    self.link_coll_vis[link_name].wxyz = fk_results_collision[i, :4]
 
 
 def main(args=None):
