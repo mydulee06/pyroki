@@ -22,7 +22,7 @@ welding_object:
   # segment_normal_deg_range: [-30.0, 30.0]
   segment_length_per_timestep: 0.0002  # 0.1 m/s * 0.02 s (vel * dt)
   offset_length: 0.01
-  approach_deg: 45.0
+  approach_deg: 30.0
 
 obstacle:
   mesh_path: null
@@ -31,9 +31,9 @@ obstacle:
 # Batch search space settings
 search_space:
   z_height: 0.3
-  x_range: [-0.50074062, -0.50074062]
-  y_range: [0.15201592, 0.15201592]
-  angle_range: [0.64401327, 0.64401327]
+  x_range: [-0.49950311, -0.49950311]
+  y_range: [0.16916784, 0.16916784]
+  angle_range: [0.7085, 0.7085]
   n_samples: 50000
   batch_size: 100
 
@@ -49,7 +49,7 @@ robot:
     - "right_wrist_roll_joint"
     - "right_wrist_yaw_joint"
   sit_terminal_states_path: eetrack/sit_trajectories.npz
-  sit_target_height: 0.38
+  sit_target_height: 0.43
 
 # Optimization weights
 weights:
@@ -66,14 +66,16 @@ collision:
   ignore_adjacent_links: true
   only_movable_links: true
   exclude_links: [
-    "head_link", "camera_color_optical_frame", "camera_link", 
-    "d435_link", "d435_mount_1_link", "d435_mount_2_link", 
-    "mid360_link", "mid360_link_IMU", "mid360_link_frame",
-    "left_shoulder_pitch_link", "left_shoulder_roll_link", "left_shoulder_yaw_link", 
-    "left_elbow_link", "left_wrist_pitch_link", "left_wrist_roll_link", 
-    "left_wrist_yaw_link", "left_rubber_hand", "left_hip_pitch_link", "left_hip_roll_link", "left_hip_yaw_link", "left_knee_link", 
-    "left_ankle_pitch_link", "left_ankle_roll_link", "left_sole_link", "right_ankle_pitch_link", "right_ankle_roll_link", "right_sole_link"
-  ]
+    'pelvis_contour_link', 'left_hip_pitch_link', 'left_hip_roll_link', 'left_hip_yaw_link', 
+    'left_knee_link', 'left_ankle_pitch_link', 'left_ankle_roll_link', 'left_sole_link', 
+    'right_hip_pitch_link', 'right_hip_roll_link', 'right_hip_yaw_link', 'right_knee_link', 
+    'right_ankle_pitch_link', 'right_ankle_roll_link', 'right_sole_link', 'waist_yaw_link', 
+    'waist_roll_link', 'torso_link', 'logo_link', 'head_link', 'imu_in_torso', 'imu_in_pelvis', 
+    'mount_link', 'zed2i_base_link', 'zed2i_camera_center', 'zed2i_left_camera_frame', 
+    'zed2i_left_camera_optical_frame', 'zed2i_right_camera_frame', 'zed2i_right_camera_optical_frame', 
+    'mid360_link', 'mid360_link_frame', 'mid360_link_IMU', 'left_shoulder_pitch_link', 'left_shoulder_roll_link', 
+    'left_shoulder_yaw_link', 'left_elbow_link', 'left_wrist_roll_link', 'left_wrist_pitch_link', 'left_wrist_yaw_link', 
+    'left_rubber_hand']
   ignore_pairs: [
     ["right_wrist_yaw_link", "right_wrist_roll_link"],
     ["right_wrist_pitch_link", "right_elbow_link"]

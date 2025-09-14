@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TypedDict
 import threading
 import trimesh
+from itertools import product
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
@@ -192,7 +193,9 @@ class TrajOptSingleEEActionServer(Node):
 
         # Robot collision
         collision_cfg = self.config.get('collision', {})
-        ignore_pairs = tuple(tuple(pair) for pair in collision_cfg.get('ignore_pairs', []))
+        ignore_pairs = list(tuple(pair) for pair in collision_cfg.get('ignore_pairs', []))
+        exclude_links = collision_cfg.get('exclude_links', [])
+        ignore_pairs += list(product(exclude_links, exclude_links))
         self.robot_coll = RobotCollision.from_urdf(
             self.urdf_obj,
             user_ignore_pairs=ignore_pairs,
@@ -273,17 +276,18 @@ class TrajOptSingleEEActionServer(Node):
         # curr_joint_pos = curr_joint_pos_mot[self.mot2yourdf]
         # Hard-codded temporally.
         curr_joint_pos = np.array([
-            -2.0133293 ,  0.13313405, -0.05333192,  2.2461107 , -0.7422835 , -0.00471803, 
-            -1.9364402 ,  0.07396649,  0.03822429,  2.2484412 , -0.81838095,  0.07413733,  
-            0.00398889, -0.00195087, -0.04700555, -0.22352298,  0.33752224,  0.02540839,  
-            1.0052238 ,  0.00622952, -0.01496937, -0.00291689, -0.23249201, -0.34823957,  
-            0.01615466,  0.9942355 ,  0.00419126, -0.01379494,  0.00628898
+            -1.8665293 ,  0.1121762 , -0.04860201,  2.0799832 , -0.69911444,
+            -0.02357982, -1.7409432 ,  0.02690366,  0.06874572,  2.112137  ,
+            -0.85512745,  0.09089185,  0.01517932,  0.01537975, -0.01664756,
+            -0.21769302,  0.34277475,  0.01119563,  0.987899  , -0.00523058,
+             0.00483096,  0.01197389, -0.20725259, -0.33734336,  0.01429845,
+             0.98550737, -0.01143866,  0.01741067,  0.00395602
         ])
 
         # TODO: implment this.
         # obj_pos_root, obj_quat_root = body_pose(self.tf_buffer, "welding_object", self.root_link_name, self.get_clock().now())
         # Hard-coded temporally.
-        obj_pos_root, obj_quat_root = np.array([0.41655093, -0.41048726,  0.11140344]), np.array([0.9319723 ,  0.08422977, -0.23514102, -0.26275766])
+        obj_pos_root, obj_quat_root = np.array([0.3974624 , -0.43468255,  0.03767955]), np.array([0.92344105,  0.08680602, -0.2230393 , -0.29995826])
         welding_object_pose = jaxlie.SE3.from_rotation_and_translation(
             rotation=jaxlie.SO3(obj_quat_root),
             translation=obj_pos_root,
@@ -473,7 +477,7 @@ class TrajOptSingleEEActionServer(Node):
             # Update the mesh in viser scene with red color
             wireframe_mesh.visual.face_colors = [255, 0, 0, 255]  # Red color
             self.link_coll_vis[link_name] = self.server.scene.add_mesh_trimesh(
-                f"collision_capsule_{link_name}",
+                f"collision/{link_name}",
                 wireframe_mesh,
             )
             self.link_coll_vis[link_name].position = fk_results_collision[i, 4:]

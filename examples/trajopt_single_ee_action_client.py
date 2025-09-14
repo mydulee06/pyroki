@@ -57,8 +57,8 @@ class TrajOptActionClient(Node):
         stamp = self.get_clock().now().to_msg()
         frame_id = "pelvis"
 
-        ee_goal_pos = np.array([0.43684632, -0.34309226,  0.13895929])
-        ee_goal_wxyz = np.array([0.9510147 ,  0.17837143,  0.13940842, -0.21052338])
+        ee_goal_pos = np.array([0.4229104 , -0.3687644 ,  0.06428317])
+        ee_goal_wxyz = np.array([0.9497023 ,  0.16148299,  0.02356473, -0.26727018])
 
         goal_msg = TrajOptSingleEE.Goal()
         goal_msg.ee_goal.header.stamp = stamp
