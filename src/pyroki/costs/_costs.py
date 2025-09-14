@@ -63,12 +63,13 @@ def limit_cost(
     robot: Robot,
     joint_var: Var[Array],
     weight: Array | float,
+    margin: float = 0.0,
 ) -> Array:
     """Computes the residual penalizing joint limit violations."""
     joint_cfg = vals[joint_var]
     joint_cfg_eff = robot.joints.get_full_config(joint_cfg)
-    residual_upper = jnp.maximum(0.0, joint_cfg_eff - robot.joints.upper_limits_all)
-    residual_lower = jnp.maximum(0.0, robot.joints.lower_limits_all - joint_cfg_eff)
+    residual_upper = jnp.maximum(0.0, joint_cfg_eff - robot.joints.upper_limits_all - margin)
+    residual_lower = jnp.maximum(0.0, robot.joints.lower_limits_all + margin - joint_cfg_eff)
     return ((residual_upper + residual_lower) * weight).flatten()
 
 

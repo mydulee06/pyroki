@@ -20,6 +20,8 @@ def solve_online_planning(
     dt: float,
     start_cfg: onp.ndarray,
     prev_sols: onp.ndarray,
+    fixed_joint_ids: onp.ndarray,
+    default_joint_pos: onp.ndarray,
 ) -> tuple[onp.ndarray, onp.ndarray, onp.ndarray]:
     """Solve online planning with collision."""
 
@@ -30,6 +32,9 @@ def solve_online_planning(
         jnp.concatenate([jnp.array(target_wxyz), jnp.array(target_position)], axis=-1)
     )
     target_links = jnp.array(target_link_indices)
+
+    fixed_joint_ids = jnp.array(fixed_joint_ids)
+    default_joint_pos = jnp.array(default_joint_pos)
 
     # Warm start: use previous solution shifted by one step.
     timesteps = timesteps + 1  # for start pose cost.
@@ -44,6 +49,8 @@ def solve_online_planning(
         dt,
         jnp.array(start_cfg),
         jnp.concatenate([prev_sols, prev_sols[-1:]], axis=0),
+        fixed_joint_ids,
+        default_joint_pos,
     )
     sol_traj = sol_traj[1:]
     sol_pos = sol_pos[1:]
@@ -63,6 +70,8 @@ def _solve_online_planning_jax(
     dt: float,
     start_cfg: jnp.ndarray,
     prev_sols: jnp.ndarray,
+    fixed_joint_ids: jnp.ndarray,
+    default_joint_pos: jnp.ndarray,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     num_targets = len(target_links)
 
@@ -176,23 +185,23 @@ def _solve_online_planning_jax(
                 weight=100.0,
                 margin=0.1,
             ),
-            # pk.costs.rest_cost(
-            #     traj_var,
-            #     jnp.array(traj_var.default_factory())[None],
-            #     weight=0.01,
-            # ),
-            pk.costs.manipulability_cost(
-                jax.tree.map(lambda x: x[None], robot),
+            pk.costs.rest_cost(
                 traj_var,
-                weight=0.01,
-                target_link_indices=target_links,
+                default_joint_pos[None],
+                weight=10000*jnp.zeros(robot.joints.num_actuated_joints).at[fixed_joint_ids].set(1.0)[None],
             ),
+            # pk.costs.manipulability_cost(
+            #     jax.tree.map(lambda x: x[None], robot),
+            #     traj_var,
+            #     weight=0.01,
+            #     target_link_indices=target_links,
+            # ),
             pk.costs.self_collision_cost(
                 jax.tree.map(lambda x: x[None], robot),
                 jax.tree.map(lambda x: x[None], robot_coll),
                 traj_var,
                 weight=1.0,
-                margin=0.05,
+                margin=0.02,
             ),
         ]
     )
@@ -204,7 +213,7 @@ def _solve_online_planning_jax(
                 traj_var,
                 jax.tree.map(lambda x: x[None], world_coll),
                 weight=1000.0,
-                margin=0.05,
+                margin=0.02,
             )
         ]
     )

@@ -76,24 +76,15 @@ def load_robot(config):
     lab2yourdf = [np.where(sit_terminal_states["lab_joint"] == jn)[0].item() for jn in urdf_obj.actuated_joint_names]
     yourdf2lab = [urdf_obj.actuated_joint_names.index(jn) for jn in sit_terminal_states["lab_joint"]]
     urdf_obj.update_cfg(joint_pos[lab2yourdf])
-    for joint in urdf_obj.robot.joints:
-        if joint.name in urdf_obj.actuated_joint_names and joint.name not in config['robot']['movable_joints']:
-            joint.type = "fixed"
-            joint.origin = urdf_obj.get_transform(joint.child, joint.parent)
-        if joint.name in config['robot']['movable_joints']:
-            joint.limit.velocity = 0.05 * joint.limit.velocity
-    modified_urdf = yourdfpy.URDF(urdf_obj.robot, mesh_dir=Path(urdf_path).parent, build_collision_scene_graph=True, load_collision_meshes=True, force_collision_mesh=True)
 
     collision_cfg = config.get('collision', {})
     ignore_pairs = tuple(tuple(pair) for pair in collision_cfg.get('ignore_pairs', []))
-    exclude_links = tuple(collision_cfg.get('exclude_links', []))
     robot_collision = RobotCollision.from_urdf(
-        modified_urdf,
+        urdf_obj,
         user_ignore_pairs=ignore_pairs,
         ignore_immediate_adjacents=collision_cfg.get('ignore_adjacent_links', True),
-        # exclude_links=exclude_links,
     )
-    return pk.Robot.from_urdf(modified_urdf), modified_urdf, robot_collision, joint_pos[lab2yourdf], joint_pos, yourdf2lab
+    return pk.Robot.from_urdf(urdf_obj), urdf_obj, robot_collision, joint_pos[lab2yourdf], joint_pos, yourdf2lab
 
 def sample_welding_object_pose(config):
     search_space = config.get('search_space', {})
@@ -196,10 +187,10 @@ def main():
     server = viser.ViserServer()
     server.scene.add_grid("/ground", width=2, height=2, cell_size=0.1)
     urdf_vis = ViserUrdf(server, urdf, root_node_name="/robot")
-    urdf_vis.update_cfg(default_joint_pos[-7:])
+    urdf_vis.update_cfg(default_joint_pos)
 
     # Create interactive controller for IK target.
-    urdf.update_cfg(default_joint_pos[-7:])
+    urdf.update_cfg(default_joint_pos)
     init_ee_T = urdf.get_transform("end_effector")
     # ik_target_handle = server.scene.add_transform_controls(
     #     "/ik_target", scale=0.2, position=init_ee_T[:3,3], wxyz=jaxlie.SO3.from_matrix(init_ee_T[:3,:3]).wxyz
@@ -243,7 +234,7 @@ def main():
     link_indices_for_collision = [robot.links.names.index(name) for name in robot_coll.link_names]
     # Update each collision capsule
     link_coll_vis = {}
-    fk_poses_arr = robot.forward_kinematics(cfg=default_joint_pos[-7:])
+    fk_poses_arr = robot.forward_kinematics(cfg=default_joint_pos)
     fk_results_collision = fk_poses_arr[jnp.array(link_indices_for_collision)]
     for i, link_name in enumerate(robot_coll.link_names):
         capsule = jax.tree.map(lambda x: x[i], coll_world)
@@ -343,8 +334,8 @@ def main():
         sol_traj = np.array(
             robot.joint_var_cls.default_factory()[None].repeat(len_traj, axis=0)
         )
-        sol_traj[:] = default_joint_pos[-7:]
-        sol_traj[0] = default_joint_pos[-7:]
+        # sol_traj[:] = default_joint_pos[-7:]
+        # sol_traj[0] = default_joint_pos[-7:]
         # Joint space interpolation
         # welding_init_joint_pos = pks.solve_ik_with_collision(
         #     robot,
@@ -372,6 +363,7 @@ def main():
             to_welding_init_se3.rotation().wxyz,
             to_welding_init_se3.translation(),
         )
+        init_sol_traj[:,:-7] = default_joint_pos[:-7]
         sol_traj = init_sol_traj.copy()
 
         def button_callback():
@@ -379,6 +371,7 @@ def main():
             sol_traj = init_sol_traj.copy()
         reset_button.on_click(lambda _: button_callback())
 
+        fixed_joint_ids = [i for i, jn in enumerate(urdf.actuated_joint_names) if jn not in config["robot"]["movable_joints"]]
         sol_traj, sol_pos, sol_wxyz = pks.solve_online_planning(
             robot=robot,
             robot_coll=robot_coll,
@@ -392,6 +385,8 @@ def main():
             dt=dt,
             start_cfg=sol_traj[0],
             prev_sols=sol_traj,
+            fixed_joint_ids=fixed_joint_ids,
+            default_joint_pos=default_joint_pos,
         )
 
         root_pose_obj = (welding_object_pose @ jaxlie.SE3.from_translation(np.array([0,0,-sampled_z]))).inverse()
@@ -404,8 +399,8 @@ def main():
         data_dict["target_ee_pos_traj"].append(sol_pos[:,0])
         data_dict["target_ee_wxyz_traj"].append(sol_wxyz[:,0])
 
-        data_dict = {k: np.stack(v) for k, v in data_dict.items()}
-        np.savez("trajopt_result.npz", **data_dict)
+        # data_dict = {k: np.stack(v) for k, v in data_dict.items()}
+        # np.savez("trajopt_result.npz", **data_dict)
 
 
         # Only for vmap. Too slow
