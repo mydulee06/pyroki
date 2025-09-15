@@ -18,7 +18,7 @@ def main():
     parser.add_argument('--skip_cma_es', action='store_true', help='CMA-ES 단계 건너뛰기')
     args = parser.parse_args()
 
-    if parser.sit_target_height is None:
+    if args.sit_target_height is None:
         sit_target_heights = np.arange(0.30, 0.58 + 1e-6, 0.02)
     else:
         sit_target_heights = [parser.sit_target_height]
