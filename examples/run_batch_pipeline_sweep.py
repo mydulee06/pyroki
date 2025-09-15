@@ -21,7 +21,7 @@ def main():
     if args.sit_target_height is None:
         sit_target_heights = np.arange(0.30, 0.58 + 1e-6, 0.02)
     else:
-        sit_target_heights = [parser.sit_target_height]
+        sit_target_heights = [args.sit_target_height]
     for sit_target_height in sit_target_heights:
         cmd = [
             sys.executable, '0_run_batch_pipeline.py',
