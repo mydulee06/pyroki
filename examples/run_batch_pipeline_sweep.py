@@ -13,11 +13,15 @@ import argparse
 def main():
     parser = argparse.ArgumentParser(description="Sweep sit_target_height for a given z_height and run 0_run_batch_pipeline.py repeatedly.")
     parser.add_argument('--z_height', type=float, required=True, help='z_height 값 (예: 0.1)')
+    parser.add_argument('--sit_target_height', type=float, default=None, help='sit_target_height 값 (예: 0.38)')
     parser.add_argument('--quiet', action='store_true', help='0_run_batch_pipeline.py 실행 시 --quiet 옵션 추가')
     parser.add_argument('--skip_cma_es', action='store_true', help='CMA-ES 단계 건너뛰기')
     args = parser.parse_args()
 
-    sit_target_heights = np.arange(0.30, 0.58 + 1e-6, 0.02)
+    if parser.sit_target_height is None:
+        sit_target_heights = np.arange(0.30, 0.58 + 1e-6, 0.02)
+    else:
+        sit_target_heights = [parser.sit_target_height]
     for sit_target_height in sit_target_heights:
         cmd = [
             sys.executable, '0_run_batch_pipeline.py',
