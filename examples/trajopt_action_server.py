@@ -25,6 +25,10 @@ import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionServer
 from trajectory_msgs.msg import JointTrajectoryPoint
+from tf2_ros.buffer import Buffer
+from tf2_ros.transform_listener import TransformListener
+from tf2_ros import TransformException
+from tf2_ros import TransformStamped
 
 from pyroki_ros.action import TrajOpt
 
@@ -34,6 +38,38 @@ class TrackingWeights(TypedDict):
     orientation_tracking: float
     smoothness: float
     joint_limits: float
+
+
+def body_pose(
+        tf_buffer,
+        frame: str,
+        ref_frame: str = 'pelvis',
+        stamp=None,
+        do_not_raise: bool = False):
+    """ --> tf does not exist """
+    if stamp is None:
+        stamp = rclpy.time.Time()
+        # stamp = clock.get_time()
+    try:
+        # t = "ref{=pelvis}_from_frame" transform
+        t = tf_buffer.lookup_transform(
+            ref_frame,  # to
+            frame,  # from
+            stamp)
+    except TransformException as ex:
+        print(f'Could not transform {frame} to {ref_frame}: {ex}')
+        if do_not_raise:
+            t = TransformStamped()
+        else:
+            raise
+
+    txn = t.transform.translation
+    rxn = t.transform.rotation
+
+    xyz = np.array([txn.x, txn.y, txn.z])
+    quat_wxyz = np.array([rxn.w, rxn.x, rxn.y, rxn.z])
+
+    return xyz, quat_wxyz
 
 
 def convert_collision_pairs_to_indices(collision_pairs, robot_collision):
@@ -261,6 +297,9 @@ class TrajOptActionServer(Node):
         self._init_visualizer()
         threading.Thread(target=self._vis_trajectory_callback, daemon=True).start()
 
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=True)
+
         self._action_server = ActionServer(
             self,
             TrajOpt,
@@ -382,6 +421,25 @@ class TrajOptActionServer(Node):
         target_ee_traj = goal_handle.request.ee_traj
 
         target_ee_traj_jax = pose_stamped_msg_list_to_jax(target_ee_traj.poses)
+
+        frame_pos_pelvis, frame_quat_pelvis = body_pose(
+            self.tf_buffer,
+            target_ee_traj.header.frame_id,
+            "pelvis",
+        )
+        frame_se3_pelvis = jaxlie.SE3.from_rotation_and_translation(
+            translation=frame_pos_pelvis,
+            rotation=jaxlie.SO3(frame_quat_pelvis),
+        )
+        target_ee_traj_se3_frame = jaxlie.SE3.from_rotation_and_translation(
+            translation=target_ee_traj_jax[:,:3],
+            rotation=jaxlie.SO3.from_quaternion_xyzw(target_ee_traj_jax[:,3:]),
+        )
+        target_ee_traj_se3_pelvis = frame_se3_pelvis @ target_ee_traj_se3_frame
+        target_ee_traj_jax = jnp.concat([
+            target_ee_traj_se3_pelvis.translation(),
+            target_ee_traj_se3_pelvis.rotation().as_quaternion_xyzw()
+        ], axis=-1)
 
         valid_max_step = self.max_traj_len
         if len(target_ee_traj_jax) < self.max_traj_len:

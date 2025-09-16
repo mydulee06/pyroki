@@ -133,7 +133,7 @@ def solve_ik_batch(
 class TrajOptSingleEEActionServer(Node):
     def __init__(self):
         super().__init__('trajopt_single_ee_action_server')
-        self.get_logger().info("trajopt_single_ee_action_server starts!")
+        self.get_logger().info("Initializing trajopt_single_ee_action_server...")
 
         self._load_config()
         self._load_robot()
@@ -161,6 +161,8 @@ class TrajOptSingleEEActionServer(Node):
             'trajopt_single_ee',
             self.execute_trajopt_single_ee,
         )
+
+        self.get_logger().info("trajopt_single_ee_action_server starts!!!")
 
 
     def _low_state_cb(self, msg: LowState):
@@ -270,24 +272,24 @@ class TrajOptSingleEEActionServer(Node):
 
     def _get_current_state(self):
         # TODO: enable in real.
-        # curr_joint_pos_mot = np.zeros(self.num_joints)
-        # for i in range(self.num_joints):
-        #     curr_joint_pos_mot[i] = self._low_state.motor_state[i].q
-        # curr_joint_pos = curr_joint_pos_mot[self.mot2yourdf]
+        curr_joint_pos_mot = np.zeros(self.num_joints)
+        for i in range(self.num_joints):
+            curr_joint_pos_mot[i] = self._low_state.motor_state[i].q
+        curr_joint_pos = curr_joint_pos_mot[self.mot2yourdf]
         # Hard-codded temporally.
-        curr_joint_pos = np.array([
-            -1.8665293 ,  0.1121762 , -0.04860201,  2.0799832 , -0.69911444,
-            -0.02357982, -1.7409432 ,  0.02690366,  0.06874572,  2.112137  ,
-            -0.85512745,  0.09089185,  0.01517932,  0.01537975, -0.01664756,
-            -0.21769302,  0.34277475,  0.01119563,  0.987899  , -0.00523058,
-             0.00483096,  0.01197389, -0.20725259, -0.33734336,  0.01429845,
-             0.98550737, -0.01143866,  0.01741067,  0.00395602
-        ])
+        # curr_joint_pos = np.array([
+        #     -1.8665293 ,  0.1121762 , -0.04860201,  2.0799832 , -0.69911444,
+        #     -0.02357982, -1.7409432 ,  0.02690366,  0.06874572,  2.112137  ,
+        #     -0.85512745,  0.09089185,  0.01517932,  0.01537975, -0.01664756,
+        #     -0.21769302,  0.34277475,  0.01119563,  0.987899  , -0.00523058,
+        #      0.00483096,  0.01197389, -0.20725259, -0.33734336,  0.01429845,
+        #      0.98550737, -0.01143866,  0.01741067,  0.00395602
+        # ])
 
         # TODO: implment this.
-        # obj_pos_root, obj_quat_root = body_pose(self.tf_buffer, "welding_object", self.root_link_name, self.get_clock().now())
+        obj_pos_root, obj_quat_root = body_pose(self.tf_buffer, "welding_object", self.root_link_name)
         # Hard-coded temporally.
-        obj_pos_root, obj_quat_root = np.array([0.3974624 , -0.43468255,  0.03767955]), np.array([0.92344105,  0.08680602, -0.2230393 , -0.29995826])
+        # obj_pos_root, obj_quat_root = np.array([0.3974624 , -0.43468255,  0.03767955]), np.array([0.92344105,  0.08680602, -0.2230393 , -0.29995826])
         welding_object_pose = jaxlie.SE3.from_rotation_and_translation(
             rotation=jaxlie.SO3(obj_quat_root),
             translation=obj_pos_root,
@@ -301,7 +303,6 @@ class TrajOptSingleEEActionServer(Node):
             self.tf_buffer,
             frame_id,
             self.root_link_name,
-            self.get_clock().now(),
         )
         frame_pose_root = jaxlie.SE3.from_rotation_and_translation(
             rotation=jaxlie.SO3(frame_quat_root),
