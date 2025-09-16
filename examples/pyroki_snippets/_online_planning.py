@@ -22,6 +22,7 @@ def solve_online_planning(
     prev_sols: onp.ndarray,
     fixed_joint_ids: onp.ndarray,
     default_joint_pos: onp.ndarray,
+    waypoints: onp.ndarray,
 ) -> tuple[onp.ndarray, onp.ndarray, onp.ndarray]:
     """Solve online planning with collision."""
 
@@ -35,6 +36,8 @@ def solve_online_planning(
 
     fixed_joint_ids = jnp.array(fixed_joint_ids)
     default_joint_pos = jnp.array(default_joint_pos)
+
+    waypoints = jnp.array(waypoints)
 
     # Warm start: use previous solution shifted by one step.
     timesteps = timesteps + 1  # for start pose cost.
@@ -51,6 +54,7 @@ def solve_online_planning(
         jnp.concatenate([prev_sols, prev_sols[-1:]], axis=0),
         fixed_joint_ids,
         default_joint_pos,
+        waypoints,
     )
     sol_traj = sol_traj[1:]
     sol_pos = sol_pos[1:]
@@ -72,6 +76,7 @@ def _solve_online_planning_jax(
     prev_sols: jnp.ndarray,
     fixed_joint_ids: jnp.ndarray,
     default_joint_pos: jnp.ndarray,
+    waypoints: jnp.ndarray,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     num_targets = len(target_links)
 
@@ -137,6 +142,13 @@ def _solve_online_planning_jax(
             * jnp.array([100.0] * 3 + [50.0] * 3)
         ).flatten()
 
+    @jaxls.Cost.create_factory(name="SE3WaypointMatchCost")
+    def waypoint_match_cost(
+        vals: jaxls.VarValues,
+        pose_var: BatchedSE3Var,
+    ):
+        return (vals[pose_var].translation() - waypoints[pose_var.id]).flatten() * 10.0
+
     @jaxls.Cost.create_factory(name="MatchStartPoseCost")
     def match_start_pose_cost(
         vals: jaxls.VarValues,
@@ -154,6 +166,9 @@ def _solve_online_planning_jax(
                 pose_var_next,
                 pose_var_prev,
             ),
+            waypoint_match_cost(
+                pose_var,
+            )
         ]
     )
 
@@ -183,7 +198,7 @@ def _solve_online_planning_jax(
                 jax.tree.map(lambda x: x[None], robot),
                 traj_var,
                 weight=100.0,
-                margin=0.05,
+                margin=0.01,
             ),
             pk.costs.rest_cost(
                 traj_var,
@@ -212,7 +227,7 @@ def _solve_online_planning_jax(
                 jax.tree.map(lambda x: x[None], robot_coll),
                 traj_var,
                 jax.tree.map(lambda x: x[None], world_coll),
-                weight=1000.0,
+                weight=100.0,
                 margin=0.01,
             )
         ]
@@ -222,7 +237,7 @@ def _solve_online_planning_jax(
         jaxls.LeastSquaresProblem(factors, [traj_var, pose_var])
         .analyze()
         .solve(
-            verbose=False,
+            verbose=True,
             initial_vals=jaxls.VarValues.make(
                 (traj_var.with_value(prev_sols), pose_var.with_value(init_pose_vals))
             ),

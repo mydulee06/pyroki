@@ -19,6 +19,7 @@ from pyroki.collision._robot_collision_custom import RobotCollisionV2
 from robot_descriptions.loaders.yourdfpy import load_robot_description
 from viser.extras import ViserUrdf
 from itertools import product
+from scipy.interpolate import splprep, splev
 
 import jax
 import jax.numpy as jnp
@@ -140,6 +141,12 @@ def get_welding_path(config, asset_dir, modified_urdf, sampled_x=None, sampled_y
     welding_path = jnp.concatenate([welding_path_pos, welding_path_xyzw], axis=-1)[0]
     return welding_path
 
+def create_bspline_traj_from_points(points, size):
+    tck, _ = splprep(points.T)
+    spl_points = np.array(splev(np.linspace(0, 1, size), tck)).T
+    # trimesh.Scene([trimesh.PointCloud(spl_points), trimesh.PointCloud(points, [255,0,0])]).show()
+    return spl_points
+
 def main():
     """Main function for online planning with collision."""
     config, asset_dir = load_config()
@@ -203,12 +210,19 @@ def main():
     reset_button = server.gui.add_button("Reset")
     scene_vis = server.scene.add_mesh_trimesh("/scene", mesh=scene_coll.to_trimesh())
     # welding_object_vis = server.scene.add_mesh_trimesh("/welding_object", mesh=welding_object_coll.to_trimesh())
+    init_frame_handle = server.scene.add_batched_axes(
+        "init_frame",
+        axes_length=0.05,
+        axes_radius=0.005,
+        batched_positions=np.zeros((len_traj, 3)),
+        batched_wxyzs=np.array([[1.0, 0.0, 0.0, 0.0]] * len_traj),
+    )
     target_frame_handle = server.scene.add_batched_axes(
         "target_frame",
         axes_length=0.05,
         axes_radius=0.005,
-        batched_positions=np.zeros((25, 3)),
-        batched_wxyzs=np.array([[1.0, 0.0, 0.0, 0.0]] * 25),
+        batched_positions=np.zeros((len_traj, 3)),
+        batched_wxyzs=np.array([[1.0, 0.0, 0.0, 0.0]] * len_traj),
     )
 
     coll_world = robot_coll.coll
@@ -354,13 +368,29 @@ def main():
         # init_sol_traj = np.linspace(sol_traj[0], sol_traj[-1], len_traj)
 
         # SE3 space interpolation
+        init_ee_se3 = jaxlie.SE3.from_matrix(init_ee_T)
         to_welding_init_se3 = jaxlie.SE3.exp(
             jnp.linspace(
-                jaxlie.SE3.from_matrix(init_ee_T).log(),
+                init_ee_se3.log(),
                 welding_path_se3.log()[0],
                 len_traj,
             )
         )
+        start_ee_pos = np.array(init_ee_se3.translation())
+        end_ee_pos = np.array(welding_path_se3.translation()[0])
+        waypoints = np.array([
+            start_ee_pos,
+            (0.75*start_ee_pos + 0.25*end_ee_pos) + [-0.075, 0.0, 0.05],
+            (0.25*start_ee_pos + 0.75*end_ee_pos) + [-0.075, 0.0, 0.05],
+            end_ee_pos,
+        ])
+        waypoints = create_bspline_traj_from_points(waypoints, len_traj)
+        to_welding_init_se3 = jaxlie.SE3.from_rotation_and_translation(
+            to_welding_init_se3.rotation(),
+            waypoints,
+        )
+        init_frame_handle.batched_positions = np.array(to_welding_init_se3.translation())  # type: ignore[attr-defined]
+        init_frame_handle.batched_wxyzs = np.array(to_welding_init_se3.rotation().wxyz)  # type: ignore[attr-defined]
         init_sol_traj = solve_ik_batch(
             robot,
             target_link_name,
@@ -391,6 +421,7 @@ def main():
             prev_sols=sol_traj,
             fixed_joint_ids=fixed_joint_ids,
             default_joint_pos=default_joint_pos,
+            waypoints=waypoints,
         )
 
         root_pose_obj = (welding_object_pose @ jaxlie.SE3.from_translation(np.array([0,0,-sampled_z]))).inverse()
