@@ -38,7 +38,7 @@ search_space:
 
 # Robot configuration
 robot:
-  urdf_path: "eetrack/robots/g1_29dof_rev_1_0_ver4_camera_mount_v4.urdf"
+  urdf_path: "eetrack/robots/g1_29dof_rev_1_0_zed2i_with_welder_v3.urdf"
   movable_joints:
     - "right_shoulder_pitch_joint"
     - "right_shoulder_roll_joint"
@@ -65,14 +65,14 @@ collision:
   ignore_adjacent_links: true
   only_movable_links: true
   exclude_links: [
-    "head_link", "camera_color_optical_frame", "camera_link", 
-    "d435_link", "d435_mount_1_link", "d435_mount_2_link", 
-    "mid360_link", "mid360_link_IMU", "mid360_link_frame",
-    "left_shoulder_pitch_link", "left_shoulder_roll_link", "left_shoulder_yaw_link", 
-    "left_elbow_link", "left_wrist_pitch_link", "left_wrist_roll_link", 
-    "left_wrist_yaw_link", "left_rubber_hand", "left_hip_pitch_link", "left_hip_roll_link", "left_hip_yaw_link", "left_knee_link", 
-    "left_ankle_pitch_link", "left_ankle_roll_link", "left_sole_link", "right_ankle_pitch_link", "right_ankle_roll_link", "right_sole_link"
-  ]
+    'left_hip_pitch_link', 'left_hip_roll_link', 'left_hip_yaw_link', 
+    'left_knee_link', 'left_ankle_pitch_link', 'left_ankle_roll_link', 'left_sole_link', 
+    'right_ankle_pitch_link', 'right_ankle_roll_link', 'right_sole_link', 'head_link', 
+    'mount_link', 'zed2i_base_link', 'zed2i_camera_center', 'zed2i_left_camera_frame', 
+    'zed2i_left_camera_optical_frame', 'zed2i_right_camera_frame', 'zed2i_right_camera_optical_frame', 
+    'mid360_link', 'mid360_link_frame', 'mid360_link_IMU', 'left_shoulder_pitch_link', 'left_shoulder_roll_link', 
+    'left_shoulder_yaw_link', 'left_elbow_link', 'left_wrist_roll_link', 'left_wrist_pitch_link', 'left_wrist_yaw_link', 
+    'left_rubber_hand']
   ignore_pairs: [
     ["right_wrist_yaw_link", "right_wrist_roll_link"],
     ["right_wrist_pitch_link", "right_elbow_link"]
