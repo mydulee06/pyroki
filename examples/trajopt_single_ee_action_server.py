@@ -9,6 +9,7 @@ from typing import TypedDict
 import threading
 import trimesh
 from itertools import product
+from scipy.interpolate import splprep, splev
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
@@ -94,6 +95,13 @@ def pose_stamped_msg_to_se3(pose_stamped_msg: PoseStamped):
         ]),
     )
     return se3
+
+
+def create_bspline_traj_from_points(points, size):
+    tck, _ = splprep(points.T)
+    spl_points = np.array(splev(np.linspace(0, 1, size), tck)).T
+    # trimesh.Scene([trimesh.PointCloud(spl_points), trimesh.PointCloud(points, [255,0,0])]).show()
+    return spl_points
 
 
 def solve_ik_batch(
@@ -322,6 +330,19 @@ class TrajOptSingleEEActionServer(Node):
                 self.len_traj,
             )
         )
+        start_ee_pos = np.array(curr_ee_se3.translation())
+        end_ee_pos = np.array(target_ee_pose_se3.translation())
+        waypoints = np.array([
+            start_ee_pos,
+            (0.75*start_ee_pos + 0.25*end_ee_pos) + [-0.075, 0.0, 0.05],
+            (0.25*start_ee_pos + 0.75*end_ee_pos) + [-0.075, 0.0, 0.05],
+            end_ee_pos,
+        ])
+        waypoints = create_bspline_traj_from_points(waypoints, self.len_traj)
+        to_welding_init_se3 = jaxlie.SE3.from_rotation_and_translation(
+            to_welding_init_se3.rotation(),
+            waypoints,
+        )
         init_sol_traj = solve_ik_batch(
             self.robot,
             self.target_link_name,
@@ -331,7 +352,7 @@ class TrajOptSingleEEActionServer(Node):
         init_sol_traj[0] = curr_joint_pos
         init_sol_traj[:,:-7] = curr_joint_pos[:-7]
 
-        return init_sol_traj
+        return init_sol_traj, waypoints
 
 
     def _warmup_jit_fn(self):
@@ -344,6 +365,7 @@ class TrajOptSingleEEActionServer(Node):
         )
 
         dummy_ee_pose_se3 = jaxlie.SE3.identity()
+        dummy_waypoints = np.zeros((self.len_traj, 3))
         pks.solve_online_planning(
             robot=self.robot,
             robot_coll=self.robot_coll,
@@ -357,6 +379,7 @@ class TrajOptSingleEEActionServer(Node):
             prev_sols=init_sol_traj,
             fixed_joint_ids=self.fixed_joint_ids,
             default_joint_pos=np.zeros(self.num_joints),
+            waypoints=dummy_waypoints,
         )
 
 
@@ -371,7 +394,7 @@ class TrajOptSingleEEActionServer(Node):
         if target_ee_pose_msg.header.frame_id != self.root_link_name:
             target_ee_pose_se3 = self.transform_se3_to_root(target_ee_pose_se3, target_ee_pose_msg.header.frame_id)
 
-        init_sol_traj = self._init_sol_traj(curr_joint_pos, target_ee_pose_se3)
+        init_sol_traj, waypoints = self._init_sol_traj(curr_joint_pos, target_ee_pose_se3)
         sol_traj, sol_pos, sol_wxyz = pks.solve_online_planning(
             robot=self.robot,
             robot_coll=self.robot_coll,
@@ -385,6 +408,7 @@ class TrajOptSingleEEActionServer(Node):
             prev_sols=init_sol_traj,
             fixed_joint_ids=self.fixed_joint_ids,
             default_joint_pos=curr_joint_pos,
+            waypoints=waypoints,
         )
 
         stamp = self.get_clock().now().to_msg()
