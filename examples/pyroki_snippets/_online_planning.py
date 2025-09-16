@@ -237,7 +237,7 @@ def _solve_online_planning_jax(
         jaxls.LeastSquaresProblem(factors, [traj_var, pose_var])
         .analyze()
         .solve(
-            verbose=True,
+            verbose=False,
             initial_vals=jaxls.VarValues.make(
                 (traj_var.with_value(prev_sols), pose_var.with_value(init_pose_vals))
             ),
