@@ -188,11 +188,6 @@ class TrajOptSingleEEActionServer(Node):
         urdf_path = self.config['robot']['urdf_path']
         self.urdf_obj = yourdfpy.URDF.load(urdf_path)
         self.num_joints = self.urdf_obj.num_dofs
-        sit_terminal_states = np.load(self.config['robot']['sit_terminal_states_path'])
-        idx = np.abs(sit_terminal_states["target_height"] - self.config['robot']['sit_target_height']).argmin()
-        joint_pos = sit_terminal_states["joint_state"][idx, 0]
-        lab2yourdf = [np.where(sit_terminal_states["lab_joint"] == jn)[0].item() for jn in self.urdf_obj.actuated_joint_names]
-        self.urdf_obj.update_cfg(joint_pos[lab2yourdf])
 
         self.mot2yourdf = [self.config["motor_joint"].index(jn) for jn in self.urdf_obj.actuated_joint_names]
         self.yourdf2mot = [self.urdf_obj.actuated_joint_names.index(jn) for jn in self.config["motor_joint"]]
