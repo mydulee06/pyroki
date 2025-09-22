@@ -139,7 +139,7 @@ def _solve_online_planning_jax(
     ):
         return (
             (vals[pose_var].inverse() @ target_poses).log()
-            * jnp.array([100.0] * 3 + [50.0] * 3)
+            * jnp.array([200.0] * 3 + [100.0] * 3)
         ).flatten()
 
     @jaxls.Cost.create_factory(name="SE3WaypointMatchCost")

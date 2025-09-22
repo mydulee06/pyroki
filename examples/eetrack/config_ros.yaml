@@ -24,6 +24,8 @@ welding_object:
   offset_length: 0.01
   approach_deg: 30.0
 
+log_path: "log/log_0911_l1_20k_1758460430.npy"
+
 obstacle:
   mesh_path: null
   urdf_path: "eetrack/weld_objects/specimen_scene2.urdf"
