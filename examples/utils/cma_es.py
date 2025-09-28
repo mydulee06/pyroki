@@ -246,8 +246,8 @@ def main():
 
     for exp_path in exp_paths:
         save_path = exp_path / "best_base_pose.pt"
-        if save_path.exists():
-            continue
+        # if save_path.exists():
+        #     continue
         data_path = exp_path / "batch_eetrack_results_inverse.pt"
 
         # Try to load as torch file first, then as numpy file
@@ -438,7 +438,11 @@ def main():
                 )
 
         pprint(f"The most succeessful x, y, yaw: {robust_xyyaws}")
-        pprint(f"The most succeessful dx: {dx:.3f}, dy: {dy:.3f}, dyaw: {dyaw:.3f}")
+        pprint(f"The most succeessful dx: {dx:.4f}, dy: {dy:.4f}, dyaw: {dyaw:.4f}")
+        pprint(f"""The most succeessful
+               x range: [{robust_xyyaws[0]-dx:.4f}, {robust_xyyaws[0]+dx:.4f}]
+               y_range: [{robust_xyyaws[1]-dy:.4f}, {robust_xyyaws[1]+dy:.4f}]
+               yaw_range: [{robust_xyyaws[2]-dyaw:.4f}, {robust_xyyaws[2]+dyaw:.4f}]""")
         pprint(f"The most greatest success rate: {robust_xyyaw_sr} ({num_success}/{num_total})")
         save_data = {
             "xyyaws": robust_xyyaws,

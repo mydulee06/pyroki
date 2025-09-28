@@ -13,6 +13,7 @@ import torch
 import trimesh
 from glob import glob
 from tqdm import tqdm
+import argparse
 
 from eetrack.utils.weld_objects import WeldObject
 from pyroki.collision import CollisionDetector
@@ -119,19 +120,21 @@ def visualize_trajectory(server, base_frame, urdf_vis, mid_sole_frame, root_traj
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Check sit base collision during sitting trajectories.")
+    parser.add_argument('--sit_target_height', type=float, default=0.4, help='Sit target height (Ex: 0.4)')
+    parser.add_argument('--z_height', type=float, default=0.3, help='z height of welding object (Ex: 0.1)')
+    args = parser.parse_args()
+
     config, asset_dir = load_config()
     robot, urdf, modified_urdf = load_robot(config)
 
-    sampled_x, sampled_y, sampled_yaw, sampled_z = sample_welding_object_pose(config)
-
-    sit_height_cm = int(100*config['robot']['sit_target_height'])
-    sampled_z_mm = int(1000*sampled_z)
-    data_paths = sorted(glob(f"files/batch_pipeline_h38_z300/dummy_exp/batch_eetrack_results_inverse.pt"))
-    data_list = [torch.load(data_path, weights_only=False) for data_path in data_paths]
-    success_rates = [data["success_rate"] for data in data_list]
-    high_sr_idx = np.argmax(success_rates)
-    data_path = Path(data_paths[high_sr_idx])
-    data = data_list[high_sr_idx]
+    # data_paths = sorted(glob(f"files/batch_pipeline_h{int(100*args.sit_target_height)}_z{int(1000*args.z_height)}/dummy_exp/batch_eetrack_results_inverse.pt"))
+    # data_list = [torch.load(data_path, weights_only=False) for data_path in data_paths]
+    # success_rates = [data["success_rate"] for data in data_list]
+    # high_sr_idx = np.argmax(success_rates)
+    # data_path = Path(data_paths[high_sr_idx])
+    data_path = Path(f"files/batch_pipeline_h{int(100*args.sit_target_height)}_z{int(1000*args.z_height)}/dummy_exp/batch_eetrack_results_inverse.pt")
+    data = torch.load(data_path, weights_only=False)
 
     welding_object_config = config["welding_object"].copy()
     welding_object_config.pop('pose', None)
@@ -148,7 +151,7 @@ def main():
         obstacle_urdf = yourdfpy.URDF.load(obstacle_cfg["urdf_path"])
         scene = obstacle_urdf.scene
 
-    scene.apply_translation([0,0,-sampled_z])
+    scene.apply_translation([0,0,-args.z_height])
     scene.add_geometry(welding_object.trimesh, "welding_object")
     scene_mesh = scene.to_mesh()
 
@@ -157,7 +160,7 @@ def main():
     mid_sole_xyyaws = data["xyyaw_samples"][success].numpy()
     mid_sole_poses = jaxlie.SE3.from_rotation_and_translation(
         rotation=jaxlie.SO3.from_rpy_radians(jnp.zeros(N), jnp.zeros(N), mid_sole_xyyaws[:,2]),
-        translation=jnp.concat([mid_sole_xyyaws[:,:2], -sampled_z*jnp.ones((N,1))], axis=1),
+        translation=jnp.concat([mid_sole_xyyaws[:,:2], -args.z_height*jnp.ones((N,1))], axis=1),
     )
 
     coll_det = CollisionDetector(robot, urdf, scene_mesh)

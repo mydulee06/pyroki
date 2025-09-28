@@ -29,6 +29,67 @@ cd pyroki
 pip install -e .
 ```
 
+## Finding the most robust sit base pose range
+
+1. Collect sit terminal states and trajectories in [`humanoid_eetrack` with branch `feature/sitting/collect_terminal_states`](https://github.com/LibertyRoboticsInc/humanoid_eetrack/tree/feature/sitting/collect_terminal_states)
+    * Change <SITTING_POLICY_EXP_PATH> to the sit policy experiment directory with sit policy weight file.
+
+```bash
+./do_collect.sh --load_run <SITTING_POLICY_EXP_PATH> --headless --num_envs 4096 --num_states 10000
+# E.g.
+./do_collect.sh --load_run sitting_right_arm --headless --num_envs 4096 --num_states 10000
+```
+
+2. Put the sit terminal states under the examples/eetrack directory. E.g. examples/eetrack/terminal_states_11538.pt
+
+3. Convert `.pt` file to `.npz` file.
+```bash
+cd examples
+python3 utils/sit_terminal_states_pt_to_npz.py <SIT_TERMINAL_STATES_FILE>
+# E.g.
+python3 utils/sit_terminal_states_pt_to_npz.py eetrack/terminal_states_11538.pt
+```
+
+4. Change `sit_terminal_states_path` in `examples/eetrack/config.yaml` to the saved npz file from 3.
+
+5. Perform base pose sampling and evaulation through trajectory optimization foe each sit target height and welding object z height.
+    * To just know code works well, reduce `n_samples` in `examples/eetrack/config.yaml`.
+
+```bash
+cd examples
+# In terminal 1,
+CUDA_VISIBLE_DEVICES=0 python3 run_batch_pipeline_sweep.py --sit_target_height 0.4 --z_height 0.3
+# In terminal 2, change sit_target_height.
+CUDA_VISIBLE_DEVICES=1 python3 run_batch_pipeline_sweep.py --sit_target_height 0.41 --z_height 0.3
+# In terminal 3, also change sit_target_height.
+CUDA_VISIBLE_DEVICES=2 python3 run_batch_pipeline_sweep.py --sit_target_height 0.42 --z_height 0.3
+# ...
+# Do this as much as you want to change sit_target_height.
+```
+
+6. Check collision during sitting for the success base pose samples.
+    * Note: This will produce new exp folder with name `sit_coll_filtered_exp` under `files/batch_pipeline_h40_z300`
+```bash
+cd examples
+python3 17_check_sitting_collision.py --sit_target_height 0.4 --z_height 0.3
+python3 17_check_sitting_collision.py --sit_target_height 0.41 --z_height 0.3
+python3 17_check_sitting_collision.py --sit_target_height 0.42 --z_height 0.3
+# ...
+```
+
+7. Run CMA-ES to find the most wide sit base pose range. Change `exp_prefix` to the exp prefix like below.
+    * Note: Only check the result from `sit_coll_filtered_exp` not `dummy_exp`.
+
+```bash
+cd examples
+python utils/cma_es.py --log_dir files --exp_prefix batch_pipeline_h40_z300 --algo cmaes --save_cmaes_result --animate
+python utils/cma_es.py --log_dir files --exp_prefix batch_pipeline_h41_z300 --algo cmaes --save_cmaes_result --animate
+python utils/cma_es.py --log_dir files --exp_prefix batch_pipeline_h42_z300 --algo cmaes --save_cmaes_result --animate
+# ...
+```
+
+8. Compare printed sit pose range and success rate from above code and select the best sit pose.
+
 ## Status
 
 _May 6, 2025_: Initial release
