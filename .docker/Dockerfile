@@ -26,6 +26,7 @@ RUN apt-get install -y \
     python3-pip \
     ros-humble-rmw-cyclonedds-cpp \
     ros-humble-rosidl-generator-dds-idl \
+    vim-gtk3 \
  && rm -rf /var/lib/apt/lists/*
 
 # Install pip packages
