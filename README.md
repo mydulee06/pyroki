@@ -32,7 +32,9 @@ pip install -e .
 ## Finding the most robust sit base pose range
 
 1. Collect sit terminal states and trajectories in [`humanoid_eetrack` with branch `feature/sitting/collect_terminal_states`](https://github.com/LibertyRoboticsInc/humanoid_eetrack/tree/feature/sitting/collect_terminal_states)
-    * Change <SITTING_POLICY_EXP_PATH> to the sit policy experiment directory with sit policy weight file.
+    * Make `logs/rsl_rl/g1_eetrack/<SITTING_POLICY_EXP_PATH>` directory. E.g. `logs/rsl_rl/g1_eetrack/sitting_right_arm`
+    * Put sit policy weight file under the `logs/rsl_rl/g1_eetrack/<SITTING_POLICY_EXP_PATH>`. E.g. `logs/rsl_rl/g1_eetrack/sitting_right_arm/model_15050.pt`
+    * This will produce sit terminal states buffer under the same directory of sit weight file. E.g. `logs/rsl_rl/g1_eetrack/sitting_right_arm/terminal_states_11538.pt`
 
 ```bash
 ./do_collect.sh --load_run <SITTING_POLICY_EXP_PATH> --headless --num_envs 4096 --num_states 10000
@@ -40,9 +42,9 @@ pip install -e .
 ./do_collect.sh --load_run sitting_right_arm --headless --num_envs 4096 --num_states 10000
 ```
 
-2. Put the sit terminal states under the examples/eetrack directory. E.g. examples/eetrack/terminal_states_11538.pt
+2. Put the sit terminal states (e.g. terminal_states_11538.pt) under the examples/eetrack directory. E.g. examples/eetrack/terminal_states_11538.pt
 
-3. Convert `.pt` file to `.npz` file.
+3. Convert `.pt` file to `.npz` file. This will print the npz file path. E.g. eetrack/terminal_states_11538.npz
 ```bash
 cd examples
 python3 utils/sit_terminal_states_pt_to_npz.py <SIT_TERMINAL_STATES_FILE>
@@ -50,7 +52,7 @@ python3 utils/sit_terminal_states_pt_to_npz.py <SIT_TERMINAL_STATES_FILE>
 python3 utils/sit_terminal_states_pt_to_npz.py eetrack/terminal_states_11538.pt
 ```
 
-4. Change `sit_terminal_states_path` in `examples/eetrack/config.yaml` to the saved npz file from 3.
+4. Change `sit_terminal_states_path` in `examples/eetrack/config.yaml` to the saved npz file from 3. E.g. `sit_terminal_states_path: eetrack/terminal_states_11538.npz`
 
 5. Perform base pose sampling and evaulation through trajectory optimization foe each sit target height and welding object z height.
     * To just know code works well, reduce `n_samples` in `examples/eetrack/config.yaml`.
@@ -78,7 +80,7 @@ python3 17_check_sitting_collision.py --sit_target_height 0.42 --z_height 0.3
 # ...
 ```
 
-7. Run CMA-ES to find the most wide sit base pose range. Change `exp_prefix` to the exp prefix like below.
+7. Run CMA-ES to find the most wide sit base pose range. Change `exp_prefix` to `batch_pipeline_h<SIT_TARGET_HEIGHT_CM>_z<Z_HEIGHT_MM>`. E.g. `batch_pipeline_h40_z300`.
     * Note: Only check the result from `sit_coll_filtered_exp` not `dummy_exp`.
 
 ```bash
