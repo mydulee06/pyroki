@@ -54,6 +54,7 @@ python3 utils/sit_terminal_states_pt_to_npz.py eetrack/terminal_states_11538.pt
 
 5. Perform base pose sampling and evaulation through trajectory optimization foe each sit target height and welding object z height.
     * To just know code works well, reduce `n_samples` in `examples/eetrack/config.yaml`.
+    * Note: the best `sit_target_height` from the last sitting policy is `0.43`
 
 ```bash
 cd examples
