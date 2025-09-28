@@ -8,13 +8,25 @@ FROM osrf/ros:humble-desktop-full
 
 SHELL ["/bin/bash", "-c"]
 
-# Install apt packages 
-RUN apt update && apt install -y  \
+# --- Fix ROS2 expired GPG key ---
+RUN rm -f /etc/apt/sources.list.d/ros2-latest.list \
+ && rm -f /etc/apt/sources.list.d/ros2.list \
+ && apt-get update && apt-get install -y curl gnupg2 lsb-release \
+ && curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+    | tee /usr/share/keyrings/ros-archive-keyring.gpg > /dev/null \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" \
+    > /etc/apt/sources.list.d/ros2.list \
+ && apt-get update
+
+
+# --- Install apt packages ---
+RUN apt-get install -y \
     vim \
     net-tools \
     python3-pip \
     ros-humble-rmw-cyclonedds-cpp \
-    ros-humble-rosidl-generator-dds-idl
+    ros-humble-rosidl-generator-dds-idl \
+ && rm -rf /var/lib/apt/lists/*
 
 # Install pip packages
 RUN python3 -m pip install -U pip gdown
@@ -34,7 +46,8 @@ COPY . /root/pyroki
 
 # Install pyroki
 WORKDIR /root/pyroki
-RUN python3 -m pip install --no-cache-dir -e .
+RUN python3 -m pip install --no-cache-dir --ignore-installed -e .
+
 
 # Download sit terminal states and trajectories
 # RUN cd examples/eetrack && \
