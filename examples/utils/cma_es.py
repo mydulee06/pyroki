@@ -223,7 +223,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--log_dir", type=str, default="files", help="Log directory")
     parser.add_argument("--exp_prefix", type=str, help="Prefix of experiment name.")
-    parser.add_argument("--algo", type=str, default="grid", choices=["grid", "cmaes"], help="Device for torch")
     parser.add_argument("--dxy", type=float, default=0.1, help="xy bound for search")
     parser.add_argument("--dyaw", type=float, default=0.1, help="yaw bound for search")
     parser.add_argument("--num_grid", type=int, default=50, help="Number of grid")
@@ -274,168 +273,134 @@ def main():
         if "rx" in xyyaw_range:
             continue
 
-        if args.algo == "grid":
-            x_min, x_max = xyyaw_range["x"]
-            x_min += args.dxy
-            x_max -= args.dxy
-            y_min, y_max = xyyaw_range["y"]
-            y_min += args.dxy
-            y_max -= args.dxy
-            yaw_min, yaw_max = xyyaw_range["yaw"]
-            yaw_min += args.dyaw
-            yaw_max -= args.dyaw
+        x_range = xyyaw_range['x']
+        y_range = xyyaw_range['y']
+        yaw_range = xyyaw_range['yaw']
+        xyyaw_samples = xyyaw_samples.cpu().numpy()
+        success = success.cpu().numpy()
 
-            x_grid = torch.linspace(x_min, x_max, num_grid+1, device=device)
-            y_grid = torch.linspace(y_min, y_max, num_grid+1, device=device)
-            yaw_grid = torch.linspace(yaw_min, yaw_max, num_grid+1, device=device)
+        cmaes_cfg = {
+            "seed": 42,
+            "mean": np.array([
+                np.mean(x_range),
+                np.mean(y_range),
+                np.mean(yaw_range),
+                args.max_dx,
+                args.max_dy,
+                args.max_dyaw,
+            ]),
+            "sigma": 0.5,
+            "bounds": np.array([
+                np.array([x_range[0]+args.max_dx, x_range[1]-args.max_dx]),
+                np.array([y_range[0]+args.max_dy, y_range[1]-args.max_dy]),
+                np.array([yaw_range[0]+args.max_dyaw, yaw_range[1]-args.max_dyaw]),
+                [0.05, args.max_dx],
+                [0.05, args.max_dy],
+                [0.05, args.max_dyaw],
+            ]),
+            "population_size": 32,
+            "lr_adapt": False,
+        }
+        cost_cfg = {
+            "sr": {
+                "enabled": True,
+                "weight": 1.0,
+            },
+            "num_sample": {
+                "enabled": True,
+                "weight": 2.5,
+            },
+            "dx": {
+                "enabled": True,
+                "weight": 0.2,
+            },
+            "dy": {
+                "enabled": True,
+                "weight": 0.1,
+            },
+            "dyaw": {
+                "enabled": True,
+                "weight": 0.1,
+            },
+        }
 
-            grid = torch.stack(torch.meshgrid(x_grid, y_grid, yaw_grid), dim=-1).reshape(-1,3)
-            dist = xyyaw_samples[None] - grid[:,None]
-            xy_dist = dist[...,:2].norm(dim=-1)
-            yaw_dist = dist[...,2].abs()
+        wrapped_cost_fn = partial(
+            cost_fn,
+            xyyaw_samples=xyyaw_samples,
+            success=success,
+            cmaes_cfg=cmaes_cfg,
+            cost_cfg=cost_cfg,
+        )
 
-            grid_mask = (xy_dist < dxy) & (yaw_dist < dyaw)
-            grid_success_mask = success.repeat(grid.shape[0],1) & grid_mask
-            grid_num_success = grid_success_mask.sum(dim=-1)
-            grid_num_total = grid_mask.sum(dim=-1)
-            grid_success_rate = grid_num_success / grid_num_total
-            grid_success_rate[grid_success_rate.isnan()] = 0.0
-            ids = (grid_success_rate == grid_success_rate.max()).nonzero().flatten()
-            ids = ids[grid_num_success[ids] == grid_num_success[ids].max()]
-            robust_xyyaws = grid[ids].tolist()
-            robust_xyyaw_sr = grid_success_rate[ids][0].item()
-            num_success = grid_success_mask.sum(dim=-1)[ids][0].item()
-            num_total = grid_mask.sum(dim=-1)[ids][0].item()
+        optimizer = CMA(
+            **cmaes_cfg
+        )
+        if args.verbose:
+            print(" evals    cost")
+            print("======  ==========")
 
-        elif args.algo == "cmaes":
-            x_range = xyyaw_range['x']
-            y_range = xyyaw_range['y']
-            yaw_range = xyyaw_range['yaw']
-            xyyaw_samples = xyyaw_samples.cpu().numpy()
-            success = success.cpu().numpy()
+        evals = 0
+        x_traj = [cmaes_cfg["mean"]]
+        cost_traj = [wrapped_cost_fn(cmaes_cfg["mean"])[0]]
+        per_cost_traj = {cost_name: [cost_value] for cost_name, cost_value in wrapped_cost_fn(cmaes_cfg["mean"])[1].items()}
 
-            cmaes_cfg = {
-                "seed": 42,
-                "mean": np.array([
-                    np.mean(x_range),
-                    np.mean(y_range),
-                    np.mean(yaw_range),
-                    args.max_dx,
-                    args.max_dy,
-                    args.max_dyaw,
-                ]),
-                "sigma": 0.5,
-                "bounds": np.array([
-                    np.array([x_range[0]+args.max_dx, x_range[1]-args.max_dx]),
-                    np.array([y_range[0]+args.max_dy, y_range[1]-args.max_dy]),
-                    np.array([yaw_range[0]+args.max_dyaw, yaw_range[1]-args.max_dyaw]),
-                    [0.05, args.max_dx],
-                    [0.05, args.max_dy],
-                    [0.05, args.max_dyaw],
-                ]),
-                "population_size": 32,
-                "lr_adapt": False,
-            }
-            cost_cfg = {
-                "sr": {
-                    "enabled": True,
-                    "weight": 1.0,
-                },
-                "num_sample": {
-                    "enabled": True,
-                    "weight": 2.5,
-                },
-                "dx": {
-                    "enabled": True,
-                    "weight": 0.2,
-                },
-                "dy": {
-                    "enabled": True,
-                    "weight": 0.1,
-                },
-                "dyaw": {
-                    "enabled": True,
-                    "weight": 0.1,
-                },
-            }
+        while True:
+            solutions = []
+            for _ in range(optimizer.population_size):
+                x = optimizer.ask()
+                cost, cost_info = wrapped_cost_fn(x)
+                evals += 1
+                solutions.append((x, cost))
+                if evals % 50 == 0:
+                    x_traj.append(x)
+                    cost_traj.append(cost)
+                    for cost_name, cost_value in cost_info.items():
+                        per_cost_traj[cost_name].append(cost_value)
+                    if args.verbose:
+                        print(f"{evals:5d}  {cost:10.5f}")
+            optimizer.tell(solutions)
 
-            wrapped_cost_fn = partial(
-                cost_fn,
-                xyyaw_samples=xyyaw_samples,
-                success=success,
-                cmaes_cfg=cmaes_cfg,
-                cost_cfg=cost_cfg,
+            if optimizer.should_stop():
+                break
+
+        robust_xyyaws = x[:3]
+        dx = x[3]
+        dy = x[4]
+        dyaw = x[5]
+        robust_xyyaw_sr, num_success, num_total  = compute_sr(x, xyyaw_samples, success)
+
+        x_traj = np.stack(x_traj)
+        cost_traj = np.stack(cost_traj)
+        date_time = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+        cmaes_dir = exp_path / "cmaes"
+        cmaes_dir.mkdir(exist_ok=True)
+
+        cmaes_result = {
+            "cmaes_cfg": cmaes_cfg,
+            "cost_cfg": cost_cfg,
+            "x_traj": x_traj,
+            "cost_traj": cost_traj,
+            "x": x,
+            "success_rate": robust_xyyaw_sr,
+            "num_success": num_success,
+            "num_total": num_total,
+        }
+        if args.save_cmaes_result:
+            cmaes_save_path = cmaes_dir / f"{date_time}_cames_result.npz"
+            np.savez(cmaes_save_path, **cmaes_result)
+            print(f"CMA-ES result is saved to {cmaes_save_path}")
+
+        if args.animate:
+            animate_cmaes(
+                cmaes_dir,
+                date_time,
+                xyyaw_samples,
+                success,
+                x_traj,
+                cost_traj,
+                per_cost_traj,
+                cmaes_result,
             )
-
-            optimizer = CMA(
-                **cmaes_cfg
-            )
-            if args.verbose:
-                print(" evals    cost")
-                print("======  ==========")
-
-            evals = 0
-            x_traj = [cmaes_cfg["mean"]]
-            cost_traj = [wrapped_cost_fn(cmaes_cfg["mean"])[0]]
-            per_cost_traj = {cost_name: [cost_value] for cost_name, cost_value in wrapped_cost_fn(cmaes_cfg["mean"])[1].items()}
-
-            while True:
-                solutions = []
-                for _ in range(optimizer.population_size):
-                    x = optimizer.ask()
-                    cost, cost_info = wrapped_cost_fn(x)
-                    evals += 1
-                    solutions.append((x, cost))
-                    if evals % 50 == 0:
-                        x_traj.append(x)
-                        cost_traj.append(cost)
-                        for cost_name, cost_value in cost_info.items():
-                            per_cost_traj[cost_name].append(cost_value)
-                        if args.verbose:
-                            print(f"{evals:5d}  {cost:10.5f}")
-                optimizer.tell(solutions)
-
-                if optimizer.should_stop():
-                    break
-
-            robust_xyyaws = x[:3]
-            dx = x[3]
-            dy = x[4]
-            dyaw = x[5]
-            robust_xyyaw_sr, num_success, num_total  = compute_sr(x, xyyaw_samples, success)
-
-            x_traj = np.stack(x_traj)
-            cost_traj = np.stack(cost_traj)
-            date_time = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-            cmaes_dir = exp_path / "cmaes"
-            cmaes_dir.mkdir(exist_ok=True)
-
-            cmaes_result = {
-                "cmaes_cfg": cmaes_cfg,
-                "cost_cfg": cost_cfg,
-                "x_traj": x_traj,
-                "cost_traj": cost_traj,
-                "x": x,
-                "success_rate": robust_xyyaw_sr,
-                "num_success": num_success,
-                "num_total": num_total,
-            }
-            if args.save_cmaes_result:
-                cmaes_save_path = cmaes_dir / f"{date_time}_cames_result.npz"
-                np.savez(cmaes_save_path, **cmaes_result)
-                print(f"CMA-ES result is saved to {cmaes_save_path}")
-
-            if args.animate:
-                animate_cmaes(
-                    cmaes_dir,
-                    date_time,
-                    xyyaw_samples,
-                    success,
-                    x_traj,
-                    cost_traj,
-                    per_cost_traj,
-                    cmaes_result,
-                )
 
         pprint(f"The most succeessful x, y, yaw: {robust_xyyaws}")
         pprint(f"The most succeessful dx: {dx:.4f}, dy: {dy:.4f}, dyaw: {dyaw:.4f}")

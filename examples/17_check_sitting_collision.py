@@ -20,6 +20,17 @@ from pyroki.collision import CollisionDetector
 
 
 def get_mid_sole_link_pose(left_sole_link_pose, right_sole_link_pose):
+    """Calculates the average pose between the left and right sole links of the
+    robot. This is used as a stable reference frame.
+
+    Args:
+        left_sole_link_pose (jaxlie.SE3): The pose of the left sole link.
+        right_sole_link_pose (jaxlie.SE3): The pose of the right sole link.
+
+    Returns:
+        (jaxlie.SE3): The average pose, computed by averaging the translation
+            and rotation components.
+    """
     return jaxlie.SE3.from_rotation_and_translation(
         rotation=jaxlie.SO3.exp(
             (left_sole_link_pose.rotation().log() + right_sole_link_pose.rotation().log()) / 2
@@ -29,6 +40,13 @@ def get_mid_sole_link_pose(left_sole_link_pose, right_sole_link_pose):
 
 
 def load_config():
+    """Loads the main configuration file (`config_solo.yaml`) for the script.
+
+    Returns:
+        Tuple[dict, Path]: A tuple containing:
+            config (dict): The loaded configuration parameters.
+            asset_dir (Path): The path to the `eetrack` asset directory.
+    """
     asset_dir = Path(__file__).parent / "eetrack"
     config_file = asset_dir / "config_solo.yaml"
     with open(config_file, 'r') as f:
@@ -37,6 +55,19 @@ def load_config():
 
 
 def load_robot(config):
+    """Loads the robot models required for kinematics and collision checking.
+
+    Args:
+        config (dict): The main configuration dictionary.
+
+    Returns:
+        Tuple[pk.Robot, yourdfpy.URDF, yourdfpy.URDF]: A tuple containing:
+            robot (pk.Robot): The `pyroki` robot object for kinematics.
+            urdf (yourdfpy.URDF): The standard `yourdfpy` object with collision
+                meshes.
+            modified_urdf (yourdfpy.URDF): A `yourdfpy` object with non-movable
+                joints fixed to a default sitting posture.
+    """
     urdf_path = config['robot']['urdf_path']
     urdf = yourdfpy.URDF.load(
         urdf_path, force_mesh=True,
@@ -60,42 +91,111 @@ def load_robot(config):
     return robot, urdf, modified_urdf
 
 
-def sample_welding_object_pose(config):
-    search_space = config.get('search_space', {})
-    x_min, x_max = search_space.get('x_range', [-0.3, 0.3])
-    y_min, y_max = search_space.get('y_range', [-0.5, -0.1])
-    yaw_min, yaw_max = search_space.get('angle_range', [-np.pi/2, np.pi/2])
-    z_height = search_space.get('z_height', 0.0)
-    x = np.random.uniform(x_min, x_max)
-    y = np.random.uniform(y_min, y_max)
-    yaw = np.random.uniform(yaw_min, yaw_max)
-    print(f"Sampled welding object: x={x:.3f}, y={y:.3f}, z={z_height:.3f}, yaw={yaw:.3f} rad ({np.degrees(yaw):.1f} deg)")
-    return x, y, yaw, z_height
+def load_scene_mesh(config, z_height):
+    """Loads the obstacle and welding object to create a complete scene mesh.
 
+    Args:
+        config (dict): The main configuration dictionary.
+        z_height (float): The z-height to apply to the scene.
 
-def get_welding_object_and_pose(config, modified_urdf, sampled_x=None, sampled_y=None, sampled_yaw=None, sampled_z=None):
+    Returns:
+        Tuple[trimesh.Trimesh, WeldObject, jaxlie.SE3]: A tuple containing:
+            scene_mesh (trimesh.Trimesh): The combined mesh of the environment.
+            welding_object (WeldObject): The welding object instance.
+            welding_object_pose (jaxlie.SE3): The pose of the welding object.
+    """
     welding_object_config = config["welding_object"].copy()
     welding_object_config.pop('pose', None)
     welding_object_config.pop('yaw', None)
-    px = sampled_x or 0.0
-    py = sampled_y or 0.0
-    pz = sampled_z or 0.0
-    yaw = sampled_yaw or 0.0
-    so3 = jaxlie.SO3.from_rpy_radians(0.0, 0.0, yaw)
-    welding_object_pose = jaxlie.SE3.from_rotation_and_translation(so3, jnp.array([px, py, pz]))
-    parent = welding_object_config.pop("parent", None)
-    if parent == "mid_sole_link":
-        left_sole = jaxlie.SE3.from_matrix(modified_urdf.get_transform("left_sole_link")[None])
-        right_sole = jaxlie.SE3.from_matrix(modified_urdf.get_transform("right_sole_link")[None])
-        parent_pose = get_mid_sole_link_pose(left_sole, right_sole)
-    else:
-        parent_pose = jaxlie.SE3.identity((1,))
-    welding_object_pose = parent_pose @ welding_object_pose
+    welding_object_config.pop("parent", None)
     welding_object = WeldObject(**welding_object_config)
-    return welding_object, welding_object_pose, parent_pose
+
+    welding_object_pose = jaxlie.SE3(jnp.array([[1.,0.,0.,0.,0.,0.,0.]]))
+
+    obstacle_cfg = config["obstacle"]
+    if obstacle_cfg["mesh_path"] is not None:
+        scene = trimesh.load(obstacle_cfg["mesh_path"], force="scene")
+    elif obstacle_cfg["urdf_path"] is not None:
+        obstacle_urdf = yourdfpy.URDF.load(obstacle_cfg["urdf_path"])
+        scene = obstacle_urdf.scene
+
+    scene.apply_translation([0,0,-z_height])
+    scene.add_geometry(welding_object.trimesh, "welding_object")
+    scene_mesh = scene.to_mesh()
+
+    return scene_mesh, welding_object, welding_object_pose
+
+
+def check_sitting_collision(config, robot, urdf, scene_mesh, data, z_height):
+    """Performs the core batch collision checking for the sitting motion.
+
+    Args:
+        config (dict): The main configuration dictionary.
+        robot (pk.Robot): The pyroki robot model.
+        urdf (yourdfpy.URDF): The robot's URDF model.
+        scene_mesh (trimesh.Trimesh): The mesh of the environment.
+        data (dict): The loaded data from the `.pt` file, containing successful
+            samples.
+        z_height (float): The z-height of the welding object.
+
+    Returns:
+        Tuple: A tuple containing:
+            is_collide (jnp.ndarray): Boolean array indicating collision for
+                every timestep of every trajectory.
+            is_collision_sample (jnp.ndarray): Boolean array indicating if a
+                sample has a collision at any point.
+            mid_sole_poses (jaxlie.SE3): The poses of the mid_sole_link for
+                each trajectory.
+            joint_traj (jnp.ndarray): The joint trajectories for all samples.
+            N (int): The number of successful samples checked.
+            T (int): The number of timesteps in the sitting trajectory.
+    """
+    success = data["success"]
+    N = success.sum().item()
+    mid_sole_xyyaws = data["xyyaw_samples"][success].numpy()
+    mid_sole_poses = jaxlie.SE3.from_rotation_and_translation(
+        rotation=jaxlie.SO3.from_rpy_radians(jnp.zeros(N), jnp.zeros(N), mid_sole_xyyaws[:,2]),
+        translation=jnp.concat([mid_sole_xyyaws[:,:2], -z_height*jnp.ones((N,1))], axis=1),
+    )
+
+    coll_det = CollisionDetector(robot, urdf, scene_mesh)
+    check_collision_batch_fn = jax.vmap(coll_det.check_collision, in_axes=0)
+
+    sit_traj = np.load(config['robot']['sit_terminal_states_path'])
+    idx = np.abs(sit_traj["target_height"] - config['robot']['sit_target_height']).argmin()
+    lab2yourdf = [np.where(sit_traj["lab_joint"] == jn)[0].item() for jn in urdf.actuated_joint_names]
+
+    T = sit_traj["steps"][idx] + 1
+    joint_traj = sit_traj["joint_traj"][idx,:T,0][None,:,lab2yourdf].repeat(N,0).reshape(N*T,-1)
+    mid_sole_poses = jaxlie.SE3(mid_sole_poses.parameters()[:,None].repeat(T,1).reshape(N*T,-1))
+
+    B = 5000
+    is_collide = []
+    for i in tqdm(range(N*T//B + 1)):
+        ids = jnp.arange(B*i, min(B*(i+1), N*T))
+        is_collide.append(check_collision_batch_fn(joint_traj[ids], jaxlie.SE3(mid_sole_poses.parameters()[ids])))
+    is_collide = jnp.concat(is_collide)
+    is_collision_sample = is_collide.reshape(N,T).any(axis=1)
+
+    return is_collide, is_collision_sample, mid_sole_poses, joint_traj, N, T
 
 
 def visualize_trajectory(server, base_frame, urdf_vis, mid_sole_frame, root_traj, joint_traj, mid_sole_traj, is_collide):
+    """Sets up the Viser GUI and runs the interactive trajectory visualization.
+
+    Args:
+        server (viser.ViserServer): The Viser server instance.
+        base_frame (viser.scene.FrameHandle): The handle for the robot's base
+            frame.
+        urdf_vis (ViserUrdf): The Viser URDF visualizer instance.
+        mid_sole_frame (viser.scene.FrameHandle): The handle for the mid sole
+            frame.
+        root_traj (jaxlie.SE3): The SE3 trajectory of the robot's root.
+        joint_traj (jnp.ndarray): The joint trajectory.
+        mid_sole_traj (jaxlie.SE3): The SE3 trajectory of the mid sole frame.
+        is_collide (jnp.ndarray): Boolean array indicating collision for each
+            timestep.
+    """
     N, T = joint_traj.shape[:2]
     playing = server.gui.add_checkbox("playing", True)
     sample_slider = server.gui.add_slider("samples", 0, N - 1, 1, 0)
@@ -120,6 +220,7 @@ def visualize_trajectory(server, base_frame, urdf_vis, mid_sole_frame, root_traj
 
 
 def main():
+    """Main function to orchestrate the sitting collision check pipeline."""
     parser = argparse.ArgumentParser(description="Check sit base collision during sitting trajectories.")
     parser.add_argument('--sit_target_height', type=float, default=0.4, help='Sit target height (Ex: 0.4)')
     parser.add_argument('--z_height', type=float, default=0.3, help='z height of welding object (Ex: 0.1)')
@@ -128,63 +229,16 @@ def main():
     config, asset_dir = load_config()
     robot, urdf, modified_urdf = load_robot(config)
 
-    # data_paths = sorted(glob(f"files/batch_pipeline_h{int(100*args.sit_target_height)}_z{int(1000*args.z_height)}/dummy_exp/batch_eetrack_results_inverse.pt"))
-    # data_list = [torch.load(data_path, weights_only=False) for data_path in data_paths]
-    # success_rates = [data["success_rate"] for data in data_list]
-    # high_sr_idx = np.argmax(success_rates)
-    # data_path = Path(data_paths[high_sr_idx])
     data_path = Path(f"files/batch_pipeline_h{int(100*args.sit_target_height)}_z{int(1000*args.z_height)}/dummy_exp/batch_eetrack_results_inverse.pt")
     data = torch.load(data_path, weights_only=False)
 
-    welding_object_config = config["welding_object"].copy()
-    welding_object_config.pop('pose', None)
-    welding_object_config.pop('yaw', None)
-    welding_object_config.pop("parent", None)
-    welding_object = WeldObject(**welding_object_config)
+    scene_mesh, welding_object, welding_object_pose = load_scene_mesh(config, args.z_height)
 
-    welding_object_pose = jaxlie.SE3(jnp.array([[1.,0.,0.,0.,0.,0.,0.]]))
-
-    obstacle_cfg = config["obstacle"]
-    if obstacle_cfg["mesh_path"] is not None:
-        scene = trimesh.load(obstacle_cfg["mesh_path"], force="scene")
-    elif obstacle_cfg["urdf_path"] is not None:
-        obstacle_urdf = yourdfpy.URDF.load(obstacle_cfg["urdf_path"])
-        scene = obstacle_urdf.scene
-
-    scene.apply_translation([0,0,-args.z_height])
-    scene.add_geometry(welding_object.trimesh, "welding_object")
-    scene_mesh = scene.to_mesh()
-
-    success = data["success"]
-    N = success.sum().item()
-    mid_sole_xyyaws = data["xyyaw_samples"][success].numpy()
-    mid_sole_poses = jaxlie.SE3.from_rotation_and_translation(
-        rotation=jaxlie.SO3.from_rpy_radians(jnp.zeros(N), jnp.zeros(N), mid_sole_xyyaws[:,2]),
-        translation=jnp.concat([mid_sole_xyyaws[:,:2], -args.z_height*jnp.ones((N,1))], axis=1),
-    )
-
-    coll_det = CollisionDetector(robot, urdf, scene_mesh)
-    check_collision_batch_fn = jax.vmap(coll_det.check_collision, in_axes=0)
-
-    sit_traj = np.load(config['robot']['sit_terminal_states_path'])
-    idx = np.abs(sit_traj["target_height"] - config['robot']['sit_target_height']).argmin()
-    lab2yourdf = [np.where(sit_traj["lab_joint"] == jn)[0].item() for jn in urdf.actuated_joint_names]
-
-    T = sit_traj["steps"][idx] + 1
-    joint_traj = sit_traj["joint_traj"][idx,:T,0][None,:,lab2yourdf].repeat(N,0).reshape(N*T,-1)
-    mid_sole_poses = jaxlie.SE3(mid_sole_poses.parameters()[:,None].repeat(T,1).reshape(N*T,-1))
-
-    # coll_det.check_collision(joint_traj[0], jaxlie.SE3(mid_sole_poses.parameters()[0]))
-    B = 5000
-    is_collide = []
-    for i in tqdm(range(N*T//B + 1)):
-        ids = jnp.arange(B*i, min(B*(i+1), N*T))
-        is_collide.append(check_collision_batch_fn(joint_traj[ids], jaxlie.SE3(mid_sole_poses.parameters()[ids])))
-    is_collide = jnp.concat(is_collide)
-    is_collision_sample = is_collide.reshape(N,T).any(axis=1)
+    is_collide, is_collision_sample, mid_sole_poses, joint_traj, N, T = check_sitting_collision(config, robot, urdf, scene_mesh, data, args.z_height)
 
     print(f"Collision rate: {100*is_collision_sample.sum()/N:.1f}% ({is_collision_sample.sum()}/{N})")
 
+    success = data["success"]
     success_ids = success.nonzero().flatten()
     success_collision_ids = success_ids[np.array(is_collision_sample)]
     data["success"][success_collision_ids] = False
@@ -227,14 +281,6 @@ def main():
     )
     mid_sole_pose = get_mid_sole_link_pose(left_sole_pose, right_sole_pose)
     root_traj = mid_sole_poses @ mid_sole_pose.inverse()
-
-    # Simple hand reaching collision test
-    # ee_idx = robot.links.names.index("end_effector")
-    # last_ee_pos = (jaxlie.SE3(mid_sole_poses.parameters().reshape(N,T,-1)[:,-1]) @ jaxlie.SE3(mid_sole_pose.parameters().reshape(N,T,-1)[:,-1]).inverse() @ jaxlie.SE3(fk.reshape(N,T,*fk.shape[-2:])[:,-1,ee_idx])).translation()
-    # init_welding_pos = welding_object.get_welding_path(welding_object_pose).translation()[:,0].repeat(N,0)
-    # interp_line = last_ee_pos[~is_collision_sample] * jnp.linspace(0,1,201).reshape(-1,1,1) + init_welding_pos[~is_collision_sample] * jnp.linspace(1,0,201).reshape(-1,1,1)
-    # signed_dist, _ = coll_det.mesh_query_point(interp_line.reshape(-1,3))
-    # is_line_collide = signed_dist < 0
 
     visualize_trajectory(
         server,

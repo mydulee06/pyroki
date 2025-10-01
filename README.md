@@ -85,9 +85,9 @@ python3 17_check_sitting_collision.py --sit_target_height 0.42 --z_height 0.3
 
 ```bash
 cd examples
-python utils/cma_es.py --log_dir files --exp_prefix batch_pipeline_h40_z300 --algo cmaes --save_cmaes_result --animate
-python utils/cma_es.py --log_dir files --exp_prefix batch_pipeline_h41_z300 --algo cmaes --save_cmaes_result --animate
-python utils/cma_es.py --log_dir files --exp_prefix batch_pipeline_h42_z300 --algo cmaes --save_cmaes_result --animate
+python utils/cma_es.py --log_dir files --exp_prefix batch_pipeline_h40_z300 --save_cmaes_result --animate
+python utils/cma_es.py --log_dir files --exp_prefix batch_pipeline_h41_z300 --save_cmaes_result --animate
+python utils/cma_es.py --log_dir files --exp_prefix batch_pipeline_h42_z300 --save_cmaes_result --animate
 # ...
 ```
 

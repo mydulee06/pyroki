@@ -90,6 +90,20 @@ def setup_logging(quiet=False, verbose=False):
 
 
 class TrackingWeights(TypedDict):
+    """A dictionary-like data structure that defines the weights for various
+    components of the optimization cost function.
+
+    Fields:
+        position_tracking (float): Weight for the end-effector position
+            tracking error.
+        orientation_tracking (float): Weight for the end-effector orientation
+            tracking error.
+        smoothness (float): Weight for the cost on joint velocity, promoting
+            smoother trajectories.
+        joint_limits (float): Weight for the penalty when joints approach their
+            limits.
+        collision (float): Weight for the self-collision avoidance penalty.
+    """
     position_tracking: float
     orientation_tracking: float
     smoothness: float
@@ -97,6 +111,17 @@ class TrackingWeights(TypedDict):
     collision: float
 
 def get_mid_sole_link_pose(left_sole_link_pose, right_sole_link_pose):
+    """Calculates the average pose between the left and right sole links of the
+    robot. This is used as a stable reference frame.
+
+    Args:
+        left_sole_link_pose (jaxlie.SE3): The pose of the left sole link.
+        right_sole_link_pose (jaxlie.SE3): The pose of the right sole link.
+
+    Returns:
+        (jaxlie.SE3): The average pose, computed by averaging the translation
+            and rotation components.
+    """
     return jaxlie.SE3.from_rotation_and_translation(
         rotation=jaxlie.SO3.exp(
             (left_sole_link_pose.rotation().log() + right_sole_link_pose.rotation().log()) / 2
@@ -105,6 +130,13 @@ def get_mid_sole_link_pose(left_sole_link_pose, right_sole_link_pose):
     )
 
 def load_config():
+    """Loads the main configuration file (`config.yaml`) for the script.
+
+    Returns:
+        Tuple[dict, Path]: A tuple containing:
+            config (dict): The loaded configuration parameters.
+            asset_dir (Path): The path to the `eetrack` asset directory.
+    """
     asset_dir = Path(__file__).parent / "eetrack"
     config_file = asset_dir / "config.yaml"
     with open(config_file, 'r') as f:
@@ -112,6 +144,21 @@ def load_config():
     return config, asset_dir
 
 def load_robot(config, sit_target_height):
+    """Loads the robot's URDF model, modifies it according to the
+    configuration, and sets up the collision model.
+
+    Args:
+        config (dict): The main configuration dictionary.
+        sit_target_height (float): The target sitting height, used to set the
+            robot's initial posture.
+
+    Returns:
+        Tuple[pk.Robot, yourdfpy.URDF, RobotCollisionV2]: A tuple containing:
+            robot (pk.Robot): The `pyroki` robot object used for kinematics.
+            modified_urdf (yourdfpy.URDF): The modified URDF object where
+                non-movable joints have been fixed.
+            robot_collision (RobotCollisionV2): The robot's collision model.
+    """
     urdf_path = config['robot']['urdf_path']
     urdf_obj = yourdfpy.URDF.load(urdf_path)
     sit_terminal_states = np.load(config['robot']['sit_terminal_states_path'])
@@ -137,6 +184,21 @@ def load_robot(config, sit_target_height):
     return pk.Robot.from_urdf(modified_urdf), modified_urdf, robot_collision
 
 def convert_collision_pairs_to_indices(collision_pairs, robot_collision):
+    """Converts a list of collision link pairs (by name) into JAX-compatible
+    arrays of integer indices.
+
+    Args:
+        collision_pairs (list): A list of string tuples, where each tuple is a
+            pair of link names to check for collision
+            (e.g., `[('link1', 'link2')]`).
+        robot_collision (RobotCollisionV2): The robot's collision model, which
+            contains the mapping from link names to indices.
+
+    Returns:
+        Tuple[jnp.ndarray, jnp.ndarray]: A tuple of two arrays
+            (`active_idx_i`, `active_idx_j`) containing the integer indices
+            for the collision pairs.
+    """
     link_names = robot_collision.link_names
     link_name_to_idx = {name: i for i, name in enumerate(link_names)}
     active_idx_i = []
@@ -148,6 +210,31 @@ def convert_collision_pairs_to_indices(collision_pairs, robot_collision):
     return jnp.array(active_idx_i), jnp.array(active_idx_j)
 
 def compute_collision_costs(robot, coll_capsules, robot_cfg, active_idx_i, active_idx_j, safety_margin, collision_weight, link_indices_for_collision):
+    """Computes the collision penalty for a given robot configuration. The cost
+    is positive if the distance between any pair of collision bodies is less
+    than a safety margin.
+
+    Args:
+        robot (pk.Robot): The pyroki robot model.
+        coll_capsules: The robot's collision geometry.
+        robot_cfg (jnp.ndarray): The robot's joint configuration.
+        active_idx_i (jnp.ndarray): Indices of the first link in each
+            collision pair.
+        active_idx_j (jnp.ndarray): Indices of the second link in each
+            collision pair.
+        safety_margin (float): The desired minimum distance between collision
+            bodies.
+        collision_weight (float): The weight to apply to the collision
+            penalty.
+        link_indices_for_collision (list): A list of link indices relevant for
+            collision checking.
+
+    Returns:
+        Tuple[jnp.ndarray, jnp.ndarray]: A tuple containing:
+            costs (jnp.ndarray): The computed collision costs for each active
+                pair.
+            dists (jnp.ndarray): The distances for each active pair.
+    """
     Ts_link_world_wxyz_xyz = robot.forward_kinematics(cfg=robot_cfg)
     Ts_link_world_wxyz_xyz = Ts_link_world_wxyz_xyz[jnp.array(link_indices_for_collision)]
     import jaxlie
@@ -169,10 +256,39 @@ def collision_cost_jax(
     collision_weight,
     link_indices_for_collision
 ):
+    """A JIT-compatible wrapper around `compute_collision_costs` that returns
+    the sum of all collision costs. This is used within the main optimization
+    loop.
+
+    Args:
+        robot_cfg: The robot's joint configuration.
+        robot: The pyroki robot model.
+        coll_capsules: The robot's collision geometry.
+        active_idx_i: Indices of the first link in each collision pair.
+        active_idx_j: Indices of the second link in each collision pair.
+        safety_margin: The desired minimum distance between collision bodies.
+        collision_weight: The weight to apply to the collision penalty.
+        link_indices_for_collision: A list of link indices relevant for
+            collision checking.
+
+    Returns:
+        (jnp.ndarray): A single-element array containing the total collision
+            cost.
+    """
     costs, _ = compute_collision_costs(robot, coll_capsules, robot_cfg, active_idx_i, active_idx_j, safety_margin, collision_weight, link_indices_for_collision)
     return jnp.array([jnp.sum(costs)])
 
 def sample_welding_object_pose(config):
+    """Samples a single random pose for the welding object from the search
+    space defined in the configuration.
+
+    Args:
+        config (dict): The main configuration dictionary.
+
+    Returns:
+        Tuple[float, float, float, float]: A tuple containing the sampled `x`,
+            `y`, `yaw`, and `z` values.
+    """
     search_space = config.get('search_space', {})
     x_min, x_max = search_space.get('x_range', [-0.3, 0.3])
     y_min, y_max = search_space.get('y_range', [-0.5, -0.1])
@@ -185,6 +301,18 @@ def sample_welding_object_pose(config):
     return x, y, yaw, z_height
 
 def sample_welding_object_pose_batch(config, batch_size, z_height=None):
+    """Generates a batch of random poses for the welding object.
+
+    Args:
+        config (dict): The main configuration dictionary.
+        batch_size (int): The number of samples to generate.
+        z_height (float, optional): If provided, overrides the `z_height` from
+            the config file.
+
+    Returns:
+        (np.ndarray): A `(batch_size, 4)` array where each row is a sampled
+            `[x, y, yaw, z]`.
+    """
     search_space = config.get('search_space', {})
     x_min, x_max = search_space.get('x_range', [-0.3, 0.3])
     y_min, y_max = search_space.get('y_range', [-0.5, -0.1])
@@ -200,6 +328,21 @@ def sample_welding_object_pose_batch(config, batch_size, z_height=None):
     return samples
 
 def get_welding_object_and_pose(config, modified_urdf, sampled_x=None, sampled_y=None, sampled_yaw=None, sampled_z=None):
+    """Creates a `WeldObject` instance and computes its final pose in the world
+    frame based on a sampled pose and parent link.
+
+    Args:
+        config (dict): The main configuration dictionary.
+        modified_urdf (yourdfpy.URDF): The robot's URDF object.
+        sampled_x (float, optional): The sampled x pose component.
+        sampled_y (float, optional): The sampled y pose component.
+        sampled_yaw (float, optional): The sampled yaw pose component.
+        sampled_z (float, optional): The sampled z pose component.
+
+    Returns:
+        Tuple[WeldObject, jaxlie.SE3, jaxlie.SE3]: A tuple containing the
+            `WeldObject`, its final pose, and the pose of its parent link.
+    """
     welding_object_config = config["welding_object"].copy()
     welding_object_config.pop('pose', None)
     welding_object_config.pop('yaw', None)
@@ -221,6 +364,23 @@ def get_welding_object_and_pose(config, modified_urdf, sampled_x=None, sampled_y
     return welding_object, welding_object_pose, parent_pose
 
 def get_welding_path(config, asset_dir, modified_urdf, sampled_x=None, sampled_y=None, sampled_yaw=None, sampled_z=None):
+    """Generates the target end-effector trajectory (welding path) for a
+    single sampled object pose.
+
+    Args:
+        config (dict): The main configuration dictionary.
+        asset_dir (Path): The path to the `eetrack` asset directory.
+        modified_urdf (yourdfpy.URDF): The robot's URDF object.
+        sampled_x (float, optional): The sampled x pose component.
+        sampled_y (float, optional): The sampled y pose component.
+        sampled_yaw (float, optional): The sampled yaw pose component.
+        sampled_z (float, optional): The sampled z pose component.
+
+    Returns:
+        (jnp.ndarray): A `(T, 7)` array representing the trajectory, where `T`
+            is the number of timesteps and each row is
+            `[x, y, z, qx, qy, qz, qw]`.
+    """
     if config["welding_path_from_object"]:
         welding_object, welding_object_pose, parent_pose = get_welding_object_and_pose(
             config, modified_urdf, sampled_x, sampled_y, sampled_yaw, sampled_z)
@@ -236,6 +396,16 @@ def get_welding_path(config, asset_dir, modified_urdf, sampled_x=None, sampled_y
     return welding_path
 
 def generate_demo_welding_path(welding_config: dict) -> np.ndarray:
+    """Generates a simple, straight-line welding path between a start and end
+    point.
+
+    Args:
+        welding_config (dict): A dictionary containing `start_point`,
+            `end_point`, `num_timesteps`, and `rotation`.
+
+    Returns:
+        (np.ndarray): A `(T, 7)` array representing the demo trajectory.
+    """
     start_point = np.array(welding_config['start_point'])
     end_point = np.array(welding_config['end_point'])
     num_timesteps = welding_config['num_timesteps']
@@ -252,10 +422,27 @@ def generate_demo_welding_path(welding_config: dict) -> np.ndarray:
     return np.column_stack([x, y, z, quaternions])
 
 def make_target_poses(welding_path):
+    """Converts a welding path from a NumPy array to a JAX array.
+
+    Args:
+        welding_path (np.ndarray): The `(T, 7)` trajectory array.
+
+    Returns:
+        (jnp.ndarray): The same trajectory as a JAX array.
+    """
     # welding_path: (T, 7) ndarray (xyz, xyzw)
     return jnp.asarray(welding_path)
 
 def make_target_poses_se3(welding_path):
+    """Converts a welding path into a list of `jaxlie.SE3` objects, one for
+    each timestep.
+
+    Args:
+        welding_path (np.ndarray): The `(T, 7)` trajectory array.
+
+    Returns:
+        List[jaxlie.SE3]: A list of SE3 pose objects.
+    """
     # welding_path: (T, 7) ndarray (xyz, xyzw)
     return [
         jaxlie.SE3.from_rotation_and_translation(
@@ -267,6 +454,15 @@ def make_target_poses_se3(welding_path):
 
 # Vectorized SE3 conversion function
 def se3_from_pose(pose):
+    """A utility function to convert a 7-element pose array
+    `[x, y, z, qx, qy, qz, qw]` into a `jaxlie.SE3` object.
+
+    Args:
+        pose (jnp.ndarray): A 7-element pose array.
+
+    Returns:
+        (jaxlie.SE3): The corresponding SE3 pose object.
+    """
     # pose: (7,) [x, y, z, x, y, z, w] (xyzw)
     return jaxlie.SE3.from_rotation_and_translation(
         jaxlie.SO3.from_quaternion_xyzw(pose[3:]), pose[:3]
@@ -336,6 +532,24 @@ def analyze_trajectory_optimized(robot, joints, target_poses, config, collision_
 
 
 def analyze_trajectory(robot, joints, target_poses, config, collision_pairs=None, robot_collision=None, safety_margin=None, collision_weight=None):
+    """The original, non-vectorized version of `analyze_trajectory`. It
+    computes the same metrics but iterates through timesteps sequentially.
+
+    Args:
+        robot (pk.Robot): The pyroki robot model.
+        joints (jnp.ndarray): The `(T, N_joints)` array of solved joint
+            configurations.
+        target_poses (jnp.ndarray): The `(T, 7)` array of target poses.
+        config (dict): The main configuration dictionary.
+        collision_pairs: Collision pairs to check.
+        robot_collision: The robot's collision model.
+        safety_margin: The desired minimum distance between collision bodies.
+        collision_weight: The weight to apply to the collision penalty.
+
+    Returns:
+        Tuple[float, float, float]: A tuple containing the max position error,
+            max orientation error, and max collision cost.
+    """
     num_timesteps = joints.shape[0]
     max_position_error = 0.0
     max_orientation_error = 0.0
@@ -374,6 +588,21 @@ def analyze_trajectory(robot, joints, target_poses, config, collision_pairs=None
     return max_position_error, max_orientation_error, max_collision_cost
 
 def make_solve_eetrack_optimization_jitted(robot, robot_collision, weights, max_iterations, collision_pairs, safety_margin):
+    """A factory function that creates and JIT-compiles the core trajectory
+    optimization solver.
+
+    Args:
+        robot: The pyroki robot model.
+        robot_collision: The robot's collision model.
+        weights: The weights for the optimization cost function.
+        max_iterations: The maximum number of iterations for the solver.
+        collision_pairs: Collision pairs to check.
+        safety_margin: The desired minimum distance between collision bodies.
+
+    Returns:
+        A JIT-compiled function (`solve`) that takes a `(T, 7)` target pose
+        array and returns the optimized trajectory.
+    """
     active_idx_i, active_idx_j = convert_collision_pairs_to_indices(collision_pairs, robot_collision)
     coll_capsules = robot_collision.coll
     link_indices_for_collision = [robot.links.names.index(name) for name in robot_collision.link_names]
@@ -458,6 +687,23 @@ def make_solve_eetrack_optimization_jitted(robot, robot_collision, weights, max_
 
 
 def get_welding_path_batch(config, asset_dir, modified_urdf, sampled_x, sampled_y, sampled_yaw, sampled_z):
+    """A highly optimized function that generates welding paths for an entire
+    batch of sampled poses in parallel using `jax.vmap`.
+
+    Args:
+        config (dict): The main configuration dictionary.
+        asset_dir (Path): The path to the `eetrack` asset directory.
+        modified_urdf (yourdfpy.URDF): The robot's URDF object.
+        sampled_x (np.ndarray): `(B,)` array for the batch of sampled x poses.
+        sampled_y (np.ndarray): `(B,)` array for the batch of sampled y poses.
+        sampled_yaw (np.ndarray): `(B,)` array for the batch of sampled yaw
+            poses.
+        sampled_z (np.ndarray): `(B,)` array for the batch of sampled z poses.
+
+    Returns:
+        (np.ndarray): A `(B, T, 7)` array containing all the generated welding
+            paths for the batch.
+    """
     # sampled_x, ...: (B,) ndarray
     B = sampled_x.shape[0]
     
@@ -536,6 +782,28 @@ def get_welding_path_batch(config, asset_dir, modified_urdf, sampled_x, sampled_
 
 
 def process_batch_parallel(config, asset_dir, robot, robot_collision, modified_urdf, weights, max_iterations, samples, solve_fn, collision_pairs, safety_margin, batch_idx=None, num_batches=None):
+    """Processes an entire batch of samples. This is an older version before
+    the JIT warm-up was separated.
+
+    Args:
+        config (dict): The main configuration dictionary.
+        asset_dir (Path): The path to the `eetrack` asset directory.
+        robot: The pyroki robot model.
+        robot_collision: The robot's collision model.
+        modified_urdf: The modified URDF object.
+        weights: The weights for the optimization cost function.
+        max_iterations: The maximum number of iterations for the solver.
+        samples: The batch of samples to process.
+        solve_fn: The JIT-compiled solver function.
+        collision_pairs: Collision pairs to check.
+        safety_margin: The desired minimum distance between collision bodies.
+        batch_idx (int, optional): The index of the current batch.
+        num_batches (int, optional): The total number of batches.
+
+    Returns:
+        (list): A list of result dictionaries, one for each sample in the
+            batch.
+    """
     # samples: (B, 4)
     start_time = time.time()
     B = samples.shape[0]
@@ -616,7 +884,24 @@ def process_batch_parallel(config, asset_dir, robot, robot_collision, modified_u
 
 
 def warmup_jit_functions(config, asset_dir, robot, robot_collision, modified_urdf, weights, solve_fn, collision_pairs, safety_margin, z_height=None):
-    """Warm up JIT functions with a small batch to avoid compilation overhead during actual processing"""
+    """
+    Runs the full processing pipeline on a tiny batch to trigger JAX JIT compilation ahead of time.
+
+    Args:
+        config (dict): The main configuration dictionary.
+        asset_dir (Path): The path to the `eetrack` asset directory.
+        robot: The pyroki robot model.
+        robot_collision: The robot's collision model.
+        modified_urdf: The modified URDF object.
+        weights: The weights for the optimization cost function.
+        solve_fn: The JIT-compiled solver function.
+        collision_pairs: Collision pairs to check.
+        safety_margin: The desired minimum distance between collision bodies.
+        z_height (float, optional): If provided, overrides the `z_height` from
+            the config file.
+    Returns:
+       * The JIT-compiled analysis function (analyze_fn_jit) to be reused in the main loop.
+    """
     print("Warming up JIT functions...")
     start_time = time.time()
     
@@ -647,7 +932,28 @@ def warmup_jit_functions(config, asset_dir, robot, robot_collision, modified_urd
 
 
 def process_batch_parallel_optimized(config, asset_dir, robot, robot_collision, modified_urdf, weights, max_iterations, samples, solve_fn, collision_pairs, safety_margin, analyze_fn_jit=None, batch_idx=None, num_batches=None):
-    """Optimized version that can reuse pre-compiled JIT functions"""
+    """Processes an entire batch of samples. This is an older version before
+    the JIT warm-up was separated.
+
+    Args:
+        config (dict): The main configuration dictionary.
+        asset_dir (Path): The path to the `eetrack` asset directory.
+        robot: The pyroki robot model.
+        robot_collision: The robot's collision model.
+        modified_urdf: The modified URDF object.
+        weights: The weights for the optimization cost function.
+        max_iterations: The maximum number of iterations for the solver.
+        samples: The batch of samples to process.
+        solve_fn: The JIT-compiled solver function.
+        collision_pairs: Collision pairs to check.
+        safety_margin: The desired minimum distance between collision bodies.
+        batch_idx (int, optional): The index of the current batch.
+        num_batches (int, optional): The total number of batches.
+
+    Returns:
+        (list): A list of result dictionaries, one for each sample in the
+            batch.
+    """
     # samples: (B, 4)
     start_time = time.time()
     B = samples.shape[0]
@@ -726,6 +1032,18 @@ def process_batch_parallel_optimized(config, asset_dir, robot, robot_collision, 
 
 
 def pad_samples(samples, batch_size):
+    """Pads a batch of samples with zeros if it is smaller than the target
+    `batch_size`. This is required for `jax.vmap`, which expects fixed input
+    shapes.
+
+    Args:
+        samples (np.ndarray): The array of samples.
+        batch_size (int): The desired batch size.
+
+    Returns:
+        Tuple[np.ndarray, int]: A tuple containing the padded array and the
+            original number of valid samples.
+    """
     n = samples.shape[0]
     if n == batch_size:
         return samples, n
@@ -734,6 +1052,12 @@ def pad_samples(samples, batch_size):
     return padded, n
 
 def save_results(results, filename="batch_eetrack_results.json"):
+    """Saves the final list of all results to a JSON file.
+
+    Args:
+        results (list): The list of result dictionaries.
+        filename (str): The path to the output file.
+    """
     import json
     with open(filename, "w") as f:
         json.dump(results, f, indent=2)
@@ -741,6 +1065,10 @@ def save_results(results, filename="batch_eetrack_results.json"):
 
 
 def main():
+    """The main entry point of the script. It orchestrates the entire
+    workflow: parsing arguments, loading data, warming up JIT functions,
+    running the batch processing loop, and saving the final results.
+    """
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Batch EETrack optimization with configurable sit target height and z height')
     parser.add_argument('--sit_target_height', type=float, default=0.37, 
