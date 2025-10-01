@@ -207,27 +207,27 @@ class TrajOptSingleEEActionServer(Node):
             ignore_immediate_adjacents=collision_cfg.get('ignore_adjacent_links', True),
         )
 
-        coll_world = self.robot_coll.coll
-        # Reduce capsule size for welder.
-        cap_list = []
-        for i in range(len(coll_world.size)):
-            cap_list.append(jax.tree.map(lambda x: x[i], coll_world))
-        welder_cap = cap_list[-2]
-        new_welder_cap = Capsule.from_radius_height(
-            0.8*welder_cap.radius,
-            welder_cap.height,
-            welder_cap.pose.translation() + np.array([0.0025, 0, 0.004]),
-            (welder_cap.pose.rotation() @ jaxlie.SO3.from_y_radians(np.radians(5.0))).wxyz,
-        )
-        cap_list[-2] = new_welder_cap
-        coll_world = jax.tree.map(lambda *args: jnp.stack(args), *cap_list)
-        self.robot_coll = RobotCollision(
-            self.robot_coll.num_links,
-            self.robot_coll.link_names,
-            coll_world,
-            self.robot_coll.active_idx_i,
-            self.robot_coll.active_idx_j,
-        )
+        # coll_world = self.robot_coll.coll
+        # # Reduce capsule size for welder.
+        # cap_list = []
+        # for i in range(len(coll_world.size)):
+        #     cap_list.append(jax.tree.map(lambda x: x[i], coll_world))
+        # welder_cap = cap_list[-2]
+        # new_welder_cap = Capsule.from_radius_height(
+        #     0.8*welder_cap.radius,
+        #     welder_cap.height,
+        #     welder_cap.pose.translation() + np.array([0.0025, 0, 0.004]),
+        #     (welder_cap.pose.rotation() @ jaxlie.SO3.from_y_radians(np.radians(5.0))).wxyz,
+        # )
+        # cap_list[-2] = new_welder_cap
+        # coll_world = jax.tree.map(lambda *args: jnp.stack(args), *cap_list)
+        # self.robot_coll = RobotCollision(
+        #     self.robot_coll.num_links,
+        #     self.robot_coll.link_names,
+        #     coll_world,
+        #     self.robot_coll.active_idx_i,
+        #     self.robot_coll.active_idx_j,
+        # )
 
         self.root_link_name = "pelvis"
         self.target_link_name = "end_effector"
