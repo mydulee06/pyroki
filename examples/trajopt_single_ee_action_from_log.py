@@ -10,8 +10,7 @@ import threading
 import trimesh
 from itertools import product
 from scipy.interpolate import splprep, splev
-from datetime import datetime
-from zoneinfo import ZoneInfo
+import argparse
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
@@ -30,46 +29,38 @@ from viser.extras import ViserUrdf
 
 import rclpy
 from rclpy.node import Node
-from rclpy.action import ActionServer
-from trajectory_msgs.msg import JointTrajectoryPoint
-from geometry_msgs.msg import PoseStamped
 
-from tf2_ros import TransformException
-from tf2_ros.buffer import Buffer
-from tf2_ros.transform_listener import TransformListener
-
-from pyroki_ros.action import TrajOptSingleEE
-
-from unitree_hg.msg import LowState
-
-
-def body_pose(
-    tf_buffer,
-    frame: str,
-    ref_frame: str = 'pelvis',
-    stamp=None,
-):
-    """ --> tf does not exist """
-    if stamp is None:
-        stamp = rclpy.time.Time()
-        # stamp = clock.get_time()
-    try:
-        # t = "ref{=pelvis}_from_frame" transform
-        t = tf_buffer.lookup_transform(
-            ref_frame,  # to
-            frame,      # from
-            stamp)
-    except TransformException as ex:
-        print(f'Could not transform {frame} to {ref_frame}: {ex}')
-        raise
-
-    txn = t.transform.translation
-    rxn = t.transform.rotation
-
-    xyz = np.array([txn.x, txn.y, txn.z])
-    quat_wxyz = np.array([rxn.w, rxn.x, rxn.y, rxn.z])
-
-    return xyz, quat_wxyz
+LAB_JOINT = [
+    'left_hip_pitch_joint',
+    'right_hip_pitch_joint',
+    'waist_yaw_joint',
+    'left_hip_roll_joint',
+    'right_hip_roll_joint',
+    'waist_roll_joint',
+    'left_hip_yaw_joint',
+    'right_hip_yaw_joint',
+    'waist_pitch_joint',
+    'left_knee_joint',
+    'right_knee_joint',
+    'left_shoulder_pitch_joint', #11
+    'right_shoulder_pitch_joint', #12
+    'left_ankle_pitch_joint', #13
+    'right_ankle_pitch_joint', #14
+    'left_shoulder_roll_joint', #15
+    'right_shoulder_roll_joint', #16
+    'left_ankle_roll_joint',
+    'right_ankle_roll_joint',
+    'left_shoulder_yaw_joint', #19
+    'right_shoulder_yaw_joint',
+    'left_elbow_joint',
+    'right_elbow_joint',
+    'left_wrist_roll_joint',
+    'right_wrist_roll_joint',
+    'left_wrist_pitch_joint',
+    'right_wrist_pitch_joint',
+    'left_wrist_yaw_joint',
+    'right_wrist_yaw_joint'
+]
 
 
 # Vectorized SE3 conversion function
@@ -78,25 +69,6 @@ def se3_from_pose(pose):
     return jaxlie.SE3.from_rotation_and_translation(
         jaxlie.SO3.from_quaternion_xyzw(pose[3:]), pose[:3]
     )
-
-
-def pose_stamped_msg_to_se3(pose_stamped_msg: PoseStamped):
-    se3 = jaxlie.SE3.from_rotation_and_translation(
-        rotation=jaxlie.SO3(
-            np.array([
-                pose_stamped_msg.pose.orientation.w,
-                pose_stamped_msg.pose.orientation.x,
-                pose_stamped_msg.pose.orientation.y,
-                pose_stamped_msg.pose.orientation.z,
-            ])
-        ),
-        translation=np.array([
-            pose_stamped_msg.pose.position.x,
-            pose_stamped_msg.pose.position.y,
-            pose_stamped_msg.pose.position.z,
-        ]),
-    )
-    return se3
 
 
 def create_bspline_traj_from_points(points, size):
@@ -140,10 +112,10 @@ def solve_ik_batch(
     return np.array(cfg)
 
 
-class TrajOptSingleEEActionServer(Node):
+class TrajOptSingleEEActionFromLog(Node):
     def __init__(self):
-        super().__init__('trajopt_single_ee_action_server')
-        self.get_logger().info("Initializing trajopt_single_ee_action_server...")
+        super().__init__('trajopt_single_ee_action_from_log')
+        self.get_logger().info("Initializing trajopt_single_ee_action_from_log...")
 
         self._load_config()
         self._load_robot()
@@ -152,31 +124,9 @@ class TrajOptSingleEEActionServer(Node):
         self._init_visualizer()
         threading.Thread(target=self._vis_trajectory_callback, daemon=True).start()
 
-        self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
+        # self._warmup_jit_fn()
 
-        self._low_state = LowState()
-        self._low_state_subscriber = self.create_subscription(
-            LowState,
-            "lowstate",
-            self._low_state_cb,
-            10,
-        )
-
-        self._warmup_jit_fn()
-
-        self._action_server = ActionServer(
-            self,
-            TrajOptSingleEE,
-            'trajopt_single_ee',
-            self.execute_trajopt_single_ee,
-        )
-
-        self.get_logger().info("trajopt_single_ee_action_server starts!!!")
-
-
-    def _low_state_cb(self, msg: LowState):
-        self._low_state = msg
+        self.get_logger().info("trajopt_single_ee_action_from_log starts!!!")
 
 
     def _load_config(self):
@@ -209,27 +159,27 @@ class TrajOptSingleEEActionServer(Node):
             ignore_immediate_adjacents=collision_cfg.get('ignore_adjacent_links', True),
         )
 
-        # coll_world = self.robot_coll.coll
-        # # Reduce capsule size for welder.
-        # cap_list = []
-        # for i in range(len(coll_world.size)):
-        #     cap_list.append(jax.tree.map(lambda x: x[i], coll_world))
-        # welder_cap = cap_list[-2]
-        # new_welder_cap = Capsule.from_radius_height(
-        #     0.8*welder_cap.radius,
-        #     welder_cap.height,
-        #     welder_cap.pose.translation() + np.array([0.0025, 0, 0.004]),
-        #     (welder_cap.pose.rotation() @ jaxlie.SO3.from_y_radians(np.radians(5.0))).wxyz,
-        # )
-        # cap_list[-2] = new_welder_cap
-        # coll_world = jax.tree.map(lambda *args: jnp.stack(args), *cap_list)
-        # self.robot_coll = RobotCollision(
-        #     self.robot_coll.num_links,
-        #     self.robot_coll.link_names,
-        #     coll_world,
-        #     self.robot_coll.active_idx_i,
-        #     self.robot_coll.active_idx_j,
-        # )
+        coll_world = self.robot_coll.coll
+        # Reduce capsule size for welder.
+        cap_list = []
+        for i in range(len(coll_world.size)):
+            cap_list.append(jax.tree.map(lambda x: x[i], coll_world))
+        welder_cap = cap_list[-2]
+        new_welder_cap = Capsule.from_radius_height(
+            0.8*welder_cap.radius,
+            welder_cap.height,
+            welder_cap.pose.translation() + np.array([0.0025, 0, 0.004]),
+            (welder_cap.pose.rotation() @ jaxlie.SO3.from_y_radians(np.radians(5.0))).wxyz,
+        )
+        cap_list[-2] = new_welder_cap
+        coll_world = jax.tree.map(lambda *args: jnp.stack(args), *cap_list)
+        self.robot_coll = RobotCollision(
+            self.robot_coll.num_links,
+            self.robot_coll.link_names,
+            coll_world,
+            self.robot_coll.active_idx_i,
+            self.robot_coll.active_idx_j,
+        )
 
         self.root_link_name = "pelvis"
         self.target_link_name = "end_effector"
@@ -273,49 +223,6 @@ class TrajOptSingleEEActionServer(Node):
         obstacle_coll = self._load_obstacle()
         welding_object_coll = self._load_welding_object_coll()
         self.scene_coll = jax.tree.map(lambda x, y: jnp.concat([x, y]), obstacle_coll, welding_object_coll)
-
-
-    def _get_current_state(self):
-        # TODO: enable in real.
-        curr_joint_pos_mot = np.zeros(self.num_joints)
-        for i in range(self.num_joints):
-            curr_joint_pos_mot[i] = self._low_state.motor_state[i].q
-        curr_joint_pos = curr_joint_pos_mot[self.mot2yourdf]
-        # Hard-codded temporally.
-        # curr_joint_pos = np.array([
-        #     -1.8665293 ,  0.1121762 , -0.04860201,  2.0799832 , -0.69911444,
-        #     -0.02357982, -1.7409432 ,  0.02690366,  0.06874572,  2.112137  ,
-        #     -0.85512745,  0.09089185,  0.01517932,  0.01537975, -0.01664756,
-        #     -0.21769302,  0.34277475,  0.01119563,  0.987899  , -0.00523058,
-        #      0.00483096,  0.01197389, -0.20725259, -0.33734336,  0.01429845,
-        #      0.98550737, -0.01143866,  0.01741067,  0.00395602
-        # ])
-
-        # TODO: implment this.
-        obj_pos_root, obj_quat_root = body_pose(self.tf_buffer, "welding_object", self.root_link_name)
-        # Hard-coded temporally.
-        # obj_pos_root, obj_quat_root = np.array([0.3974624 , -0.43468255,  0.03767955]), np.array([0.92344105,  0.08680602, -0.2230393 , -0.29995826])
-        welding_object_pose = jaxlie.SE3.from_rotation_and_translation(
-            rotation=jaxlie.SO3(obj_quat_root),
-            translation=obj_pos_root,
-        )
-
-        return curr_joint_pos, welding_object_pose
-    
-
-    def transform_se3_to_root(self, se3, frame_id):
-        frame_pos_root, frame_quat_root = body_pose(
-            self.tf_buffer,
-            frame_id,
-            self.root_link_name,
-        )
-        frame_pose_root = jaxlie.SE3.from_rotation_and_translation(
-            rotation=jaxlie.SO3(frame_quat_root),
-            translation=frame_pos_root,
-        )
-
-        se3_root = frame_pose_root @ se3
-        return se3_root
 
 
     def _init_sol_traj(self, curr_joint_pos, target_ee_pose_se3):
@@ -380,18 +287,13 @@ class TrajOptSingleEEActionServer(Node):
         )
 
 
-    def execute_trajopt_single_ee(self, goal_handle):
-        self.get_logger().info('Executing goal...')
+    def execute_trajopt_single_ee(self, log_path):
+        log_data = jnp.load(log_path, allow_pickle=True)
+        curr_joint_pos = log_data["curr_joint_pos"]
+        welding_object_pose = jaxlie.SE3(log_data["welding_object_pose"])
+        target_ee_pose_se3 = jaxlie.SE3(log_data["target_ee_pose_se3"])
 
-        curr_joint_pos, welding_object_pose = self._get_current_state()
         curr_scene_coll = self.scene_coll.transform(welding_object_pose)
-
-        target_ee_pose_msg = goal_handle.request.ee_goal
-        target_ee_pose_se3 = pose_stamped_msg_to_se3(target_ee_pose_msg)
-        if target_ee_pose_msg.header.frame_id != self.root_link_name:
-            target_ee_pose_se3 = self.transform_se3_to_root(target_ee_pose_se3, target_ee_pose_msg.header.frame_id)
-
-        self.save_log(curr_joint_pos, welding_object_pose, target_ee_pose_se3)
 
         init_sol_traj, waypoints = self._init_sol_traj(curr_joint_pos, target_ee_pose_se3)
         sol_traj, sol_pos, sol_wxyz = pks.solve_online_planning(
@@ -410,41 +312,9 @@ class TrajOptSingleEEActionServer(Node):
             waypoints=waypoints,
         )
 
-        stamp = self.get_clock().now().to_msg()
-        frame_id = self.root_link_name
-
-        result = TrajOptSingleEE.Result()
-        result.success = True
-        result.joint_traj.header.stamp = stamp
-        result.joint_traj.header.frame_id = frame_id
-
-        result.joint_traj.joint_names = self.robot.joints.actuated_names
-
-        joint_traj = sol_traj.tolist()
-        for joint in joint_traj:
-            point = JointTrajectoryPoint(positions=joint)
-            result.joint_traj.points.append(point)
-        goal_handle.succeed()
-        self.get_logger().info(f'Succeed to find successful joint trajectories!!')
+        self.get_logger().info("Trajopt done!!")
 
         self._set_vis_trajectory(welding_object_pose, sol_traj, sol_pos, sol_wxyz)
-
-        return result
-
-
-    def save_log(self, curr_joint_pos, welding_object_pose, target_ee_pose_se3):
-        log_dir = self.config["log_dir"]
-        if not os.path.exists(log_dir):
-            os.mkdir(log_dir)
-        date = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d-%H%M%S")
-        log_path = os.path.join(self.config["log_dir"], date + ".npz")
-        data = {
-            "curr_joint_pos": curr_joint_pos,
-            "welding_object_pose": np.array(welding_object_pose.parameters()),
-            "target_ee_pose_se3": np.array(target_ee_pose_se3.parameters()),
-        }
-        np.savez(log_path, **data)
-        self.get_logger().info(f"Log data saved to {log_path}")
 
 
     def _add_collision_mesh(self):
@@ -584,10 +454,15 @@ class TrajOptSingleEEActionServer(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    trajopt_server = TrajOptSingleEEActionServer()
+    parser = argparse.ArgumentParser(description='Execute trajopt from log data.')
+    parser.add_argument("log_path", type=str, help="Path to log data.")
+    args = parser.parse_args()
+
+    rclpy.init(args=None)
+    trajopt = TrajOptSingleEEActionFromLog()
+    trajopt.execute_trajopt_single_ee(args.log_path)
     try:
-        rclpy.spin(trajopt_server)
+        rclpy.spin(trajopt)
     except KeyboardInterrupt:
         pass
     rclpy.shutdown()
